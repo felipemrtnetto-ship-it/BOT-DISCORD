@@ -1,32 +1,14 @@
 import os
 import discord
-from discord import app_commands
 import aiosqlite
 import asyncio
 from datetime import datetime, timedelta
 import pytz
 
 # ==============================
-# DEBUG DE AMBIENTE (RAILWAY)
-# ==============================
-print("🔍 Variáveis de ambiente disponíveis:")
-for key in os.environ:
-    print(f"{key} = {os.environ[key][:30]}")  # corta pra não vazar tudo
-
-# ==============================
 # TOKEN
 # ==============================
-TOKEN = os.getenv("TOKEN")
-
-print("🔑 TOKEN bruto:", TOKEN)
-
-if not TOKEN:
-    print("❌ TOKEN não configurado!")
-    print("👉 Configure no Railway em:")
-    print("Service → Variables → TOKEN=seu_token")
-    exit()
-else:
-    print(f"✅ TOKEN carregado: {TOKEN[:10]}...")
+TOKEN = MTQ3Mjc1MTA1MjYyNDM2NzgwNA.Ggvagt.w4SFwRa9V-gRpkI4nkbtyOU_rPfvKhPu2GxX2A
 
 # ==============================
 # CONFIG
@@ -34,11 +16,12 @@ else:
 PONTOS = 10
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 
-CANAL_PRESENCA = "🧙🏻‍♂️presença-boss"
-CANAL_PONTOS = "💯pontos-boss"
+# ✅ IDS CORRETOS
+CANAL_PRESENCA_ID = 1423485053127753748
+CANAL_PONTOS_ID = 1423485889010602076
 
 eventos = [
-    ("Galia Black", "12:45", None),
+    ("Galia Black", "21:35", None),
     ("Kundun", "13:10", None),
     ("Kundun", "15:10", None),
     ("Galia Black", "16:45", None),
@@ -54,18 +37,15 @@ eventos = [
     ("Zorlak", "01:10", None),
 ]
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "ranking.db")
+DB_PATH = "ranking.db"
 
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
 
 lista_ativa = None
 participantes = {}
 mensagem_lista = None
-
 eventos_finalizados = set()
 ultimo_reset_dia = None
 
@@ -113,22 +93,24 @@ async def distribuir_pontos(canal_presenca, canal_pontos, nome):
         )
         ranking_geral = await cur.fetchall()
 
+    # 🔥 Apaga lista aberta
     if mensagem_lista:
         try:
             await mensagem_lista.delete()
         except:
             pass
 
-    participantes_formatado = "\n".join(
-        [f"{i+1}. {n}" for i, n in enumerate(lista_final)]
-    )
+    # 📋 Lista final no canal presença
+    lista_txt = "\n".join([f"{i+1}. {n}" for i, n in enumerate(lista_final)])
 
     await canal_presenca.send(
-        f"📋 **LISTA FINALIZADA — {nome}**\n\n"
+        f"🔒 **A Lista está fechada, até o próximo BOSS!**\n\n"
+        f"📋 **{nome} FINALIZADO**\n\n"
         f"👥 Participantes:\n"
-        f"{participantes_formatado if participantes_formatado else 'Nenhum participante.'}"
+        f"{lista_txt if lista_txt else 'Nenhum participante.'}"
     )
 
+    # 🏆 Ranking no canal pontos
     msg_ranking = "🏆 **RANKING GERAL – BOSSES**\n\n"
     for i, (nick, pontos) in enumerate(ranking_geral, 1):
         msg_ranking += f"{i}. {nick} — {pontos} pts\n"
@@ -143,21 +125,19 @@ async def distribuir_pontos(canal_presenca, canal_pontos, nome):
 # SCHEDULER
 # ==============================
 async def scheduler():
-    global eventos_finalizados, ultimo_reset_dia, lista_ativa, participantes, mensagem_lista
+    global lista_ativa, participantes, mensagem_lista
+    global eventos_finalizados, ultimo_reset_dia
 
     await client.wait_until_ready()
 
-    while not client.is_closed():
+    while True:
 
-        canal_presenca = discord.utils.get(
-            client.get_all_channels(), name=CANAL_PRESENCA
-        )
-        canal_pontos = discord.utils.get(
-            client.get_all_channels(), name=CANAL_PONTOS
-        )
+        canal_presenca = client.get_channel(CANAL_PRESENCA_ID)
+        canal_pontos = client.get_channel(CANAL_PONTOS_ID)
 
         if not canal_presenca or not canal_pontos:
-            await asyncio.sleep(30)
+            print("❌ Canal não encontrado!")
+            await asyncio.sleep(10)
             continue
 
         now = datetime.now(TIMEZONE)
@@ -179,26 +159,26 @@ async def scheduler():
             abrir = evento - timedelta(minutes=5)
             fechar = evento + timedelta(minutes=10)
 
-            if abrir <= now <= abrir + timedelta(seconds=30):
-                if lista_ativa is None:
-                    lista_ativa = nome
-                    participantes = {}
+            # ABRIR LISTA
+            if abrir <= now and lista_ativa is None:
+                lista_ativa = nome
+                participantes = {}
 
-                    mensagem_lista = await canal_presenca.send(
-                        f"📋 **LISTA ABERTA — {nome}**\n\n"
-                        f"👥 Participantes: 0\n\n"
-                        f"✍️ Envie seu nick no chat!"
-                    )
+                mensagem_lista = await canal_presenca.send(
+                    f"📋 **LISTA ABERTA — {nome}**\n\n"
+                    f"👥 Participantes: 0\n\n"
+                    f"✍️ Envie seu nick no chat!"
+                )
 
-            if fechar <= now <= fechar + timedelta(seconds=30):
-                if lista_ativa == nome and nome not in eventos_finalizados:
-                    eventos_finalizados.add(nome)
-                    await distribuir_pontos(canal_presenca, canal_pontos, nome)
+            # FECHAR LISTA
+            if now >= fechar and lista_ativa == nome and nome not in eventos_finalizados:
+                eventos_finalizados.add(nome)
+                await distribuir_pontos(canal_presenca, canal_pontos, nome)
 
-        await asyncio.sleep(30)
+        await asyncio.sleep(20)
 
 # ==============================
-# MENSAGENS
+# CAPTURA MENSAGENS
 # ==============================
 @client.event
 async def on_message(message):
@@ -207,7 +187,7 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.channel.name != CANAL_PRESENCA:
+    if message.channel.id != CANAL_PRESENCA_ID:
         return
 
     if not lista_ativa:
@@ -217,12 +197,13 @@ async def on_message(message):
             pass
         return
 
-    nick = message.content.strip().lower()
+    nick = message.content.strip()
 
-    if not nick or len(nick) > 15:
+    if not nick:
         return
 
     if nick in participantes.values():
+        await message.delete()
         return
 
     participantes[message.author.id] = nick
@@ -233,18 +214,15 @@ async def on_message(message):
         pass
 
     if mensagem_lista:
-        lista_formatada = "\n".join([f"• {n}" for n in participantes.values()])
+        lista_txt = "\n".join([f"• {n}" for n in participantes.values()])
 
-        try:
-            await mensagem_lista.edit(
-                content=(
-                    f"📋 **LISTA ABERTA — {lista_ativa}**\n\n"
-                    f"👥 Participantes: {len(participantes)}\n\n"
-                    f"{lista_formatada}"
-                )
+        await mensagem_lista.edit(
+            content=(
+                f"📋 **LISTA ABERTA — {lista_ativa}**\n\n"
+                f"👥 Participantes: {len(participantes)}\n\n"
+                f"{lista_txt}"
             )
-        except:
-            mensagem_lista = None
+        )
 
 # ==============================
 # READY
