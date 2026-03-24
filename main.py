@@ -4,15 +4,17 @@ import aiosqlite
 import asyncio
 from datetime import datetime, timedelta
 import pytz
+from dotenv import load_dotenv
 
 # ==============================
-# TOKEN (Railway)
+# CARREGAR .ENV
 # ==============================
+load_dotenv()
+
 TOKEN = os.getenv("TOKEN")
 
 if not TOKEN:
-    print("❌ TOKEN não encontrado! Configure no Railway.")
-    exit()
+    raise Exception("❌ TOKEN não encontrado! Verifique o arquivo .env")
 
 # ==============================
 # CONFIG
@@ -94,14 +96,12 @@ async def distribuir_pontos(canal_presenca, canal_pontos, nome):
         )
         ranking_geral = await cur.fetchall()
 
-    # Apaga lista aberta
     if mensagem_lista:
         try:
             await mensagem_lista.delete()
         except:
             pass
 
-    # Lista final (presença-boss)
     lista_txt = "\n".join([f"{i+1}. {n}" for i, n in enumerate(lista_final)])
 
     await canal_presenca.send(
@@ -111,7 +111,6 @@ async def distribuir_pontos(canal_presenca, canal_pontos, nome):
         f"{lista_txt if lista_txt else 'Nenhum participante.'}"
     )
 
-    # Ranking (pontos-boss)
     msg = "🏆 **RANKING GERAL – BOSSES**\n\n"
     for i, (nick, pontos) in enumerate(ranking_geral, 1):
         msg += f"{i}. {nick} — {pontos} pts\n"
@@ -156,7 +155,6 @@ async def scheduler():
             abrir = evento - timedelta(minutes=5)
             fechar = evento + timedelta(minutes=10)
 
-            # ABRIR LISTA
             if abrir <= now <= abrir + timedelta(seconds=20):
                 if lista_ativa is None:
                     lista_ativa = nome
@@ -168,7 +166,6 @@ async def scheduler():
                         f"✍️ Envie seu nick!"
                     )
 
-            # FECHAR LISTA
             if fechar <= now <= fechar + timedelta(seconds=20):
                 if lista_ativa == nome:
                     await distribuir_pontos(canal_presenca, canal_pontos, nome)
@@ -200,7 +197,6 @@ async def on_message(message):
     if not nick:
         return
 
-    # Bloqueia duplicado
     if nick in participantes.values():
         try:
             await message.delete()
