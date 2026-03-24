@@ -38,7 +38,7 @@ CANAL_PRESENCA = "🧙🏻‍♂️presença-boss"
 CANAL_PONTOS = "💯pontos-boss"
 
 eventos = [
-    ("Galia Black", "12:20", None),
+    ("Galia Black", "12:45", None),
     ("Kundun", "13:10", None),
     ("Kundun", "15:10", None),
     ("Galia Black", "16:45", None),
