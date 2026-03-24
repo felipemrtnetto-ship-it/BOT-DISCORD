@@ -8,7 +8,7 @@ import pytz
 # ==============================
 # TOKEN (Railway + fallback)
 # ==============================
-TOKEN = os.getenv("TOKEN") or "SEU_TOKEN_AQUI"
+TOKEN = os.getenv("TOKEN")
 
 if not TOKEN:
     print("❌ TOKEN não encontrado!")
