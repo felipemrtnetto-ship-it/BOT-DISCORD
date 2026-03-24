@@ -6,9 +6,13 @@ from datetime import datetime, timedelta
 import pytz
 
 # ==============================
-# TOKEN
+# TOKEN (Railway + fallback)
 # ==============================
-TOKEN = "MTQ3Mjc1MTA1MjYyNDM2NzgwNA.G3MFB_.rlwj0FFf14WnKWArk9gTFWagFXt7o6rIanwrYU"
+TOKEN = os.getenv("TOKEN") or "SEU_TOKEN_AQUI"
+
+if not TOKEN:
+    print("❌ TOKEN não encontrado!")
+    exit()
 
 # ==============================
 # CONFIG
@@ -16,7 +20,6 @@ TOKEN = "MTQ3Mjc1MTA1MjYyNDM2NzgwNA.G3MFB_.rlwj0FFf14WnKWArk9gTFWagFXt7o6rIanwrY
 PONTOS = 10
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 
-# ✅ IDS CORRETOS
 CANAL_PRESENCA_ID = 1423485053127753748
 CANAL_PONTOS_ID = 1423485889010602076
 
@@ -46,8 +49,8 @@ client = discord.Client(intents=intents)
 lista_ativa = None
 participantes = {}
 mensagem_lista = None
-eventos_finalizados = set()
-ultimo_reset_dia = None
+evento_atual = None
+ultimo_evento = None
 
 # ==============================
 # BANCO
@@ -63,10 +66,10 @@ async def init_db():
         await db.commit()
 
 # ==============================
-# DISTRIBUIR PONTOS
+# FINALIZAR EVENTO
 # ==============================
 async def distribuir_pontos(canal_presenca, canal_pontos, nome):
-    global participantes, lista_ativa, mensagem_lista
+    global participantes, lista_ativa, mensagem_lista, ultimo_evento
 
     lista_final = list(participantes.values())
 
@@ -93,40 +96,36 @@ async def distribuir_pontos(canal_presenca, canal_pontos, nome):
         )
         ranking_geral = await cur.fetchall()
 
-    # 🔥 Apaga lista aberta
     if mensagem_lista:
         try:
             await mensagem_lista.delete()
         except:
             pass
 
-    # 📋 Lista final no canal presença
     lista_txt = "\n".join([f"{i+1}. {n}" for i, n in enumerate(lista_final)])
 
     await canal_presenca.send(
-        f"🔒 **A Lista está fechada, até o próximo BOSS!**\n\n"
-        f"📋 **{nome} FINALIZADO**\n\n"
+        f"🔒 **LISTA FECHADA — {nome}**\n\n"
         f"👥 Participantes:\n"
         f"{lista_txt if lista_txt else 'Nenhum participante.'}"
     )
 
-    # 🏆 Ranking no canal pontos
-    msg_ranking = "🏆 **RANKING GERAL – BOSSES**\n\n"
+    msg = "🏆 **RANKING GERAL – BOSSES**\n\n"
     for i, (nick, pontos) in enumerate(ranking_geral, 1):
-        msg_ranking += f"{i}. {nick} — {pontos} pts\n"
+        msg += f"{i}. {nick} — {pontos} pts\n"
 
-    await canal_pontos.send(msg_ranking)
+    await canal_pontos.send(msg)
 
     participantes = {}
     lista_ativa = None
     mensagem_lista = None
+    ultimo_evento = nome
 
 # ==============================
-# SCHEDULER
+# SCHEDULER CORRIGIDO
 # ==============================
 async def scheduler():
-    global lista_ativa, participantes, mensagem_lista
-    global eventos_finalizados, ultimo_reset_dia
+    global lista_ativa, participantes, mensagem_lista, evento_atual
 
     await client.wait_until_ready()
 
@@ -136,21 +135,18 @@ async def scheduler():
         canal_pontos = client.get_channel(CANAL_PONTOS_ID)
 
         if not canal_presenca or not canal_pontos:
-            print("❌ Canal não encontrado!")
+            print("❌ Canal não encontrado")
             await asyncio.sleep(10)
             continue
 
         now = datetime.now(TIMEZONE)
 
-        if ultimo_reset_dia != now.date():
-            eventos_finalizados.clear()
-            ultimo_reset_dia = now.date()
-
         for nome, hora, dias in eventos:
+
             h, m = map(int, hora.split(":"))
             evento = now.replace(hour=h, minute=m, second=0, microsecond=0)
 
-            if evento < now - timedelta(minutes=15):
+            if evento < now:
                 evento += timedelta(days=1)
 
             if dias and now.weekday() not in dias:
@@ -159,26 +155,28 @@ async def scheduler():
             abrir = evento - timedelta(minutes=5)
             fechar = evento + timedelta(minutes=10)
 
-            # ABRIR LISTA
-            if abrir <= now and lista_ativa is None:
-                lista_ativa = nome
-                participantes = {}
+            # 🔥 ABRIR SOMENTE NO MOMENTO CERTO
+            if abrir <= now <= abrir + timedelta(seconds=20):
+                if lista_ativa is None:
+                    lista_ativa = nome
+                    evento_atual = nome
+                    participantes = {}
 
-                mensagem_lista = await canal_presenca.send(
-                    f"📋 **LISTA ABERTA — {nome}**\n\n"
-                    f"👥 Participantes: 0\n\n"
-                    f"✍️ Envie seu nick no chat!"
-                )
+                    mensagem_lista = await canal_presenca.send(
+                        f"📋 **LISTA ABERTA — {nome}**\n\n"
+                        f"👥 Participantes: 0\n\n"
+                        f"✍️ Envie seu nick!"
+                    )
 
-            # FECHAR LISTA
-            if now >= fechar and lista_ativa == nome and nome not in eventos_finalizados:
-                eventos_finalizados.add(nome)
-                await distribuir_pontos(canal_presenca, canal_pontos, nome)
+            # 🔥 FECHAR CORRETAMENTE
+            if fechar <= now <= fechar + timedelta(seconds=20):
+                if lista_ativa == nome:
+                    await distribuir_pontos(canal_presenca, canal_pontos, nome)
 
         await asyncio.sleep(20)
 
 # ==============================
-# CAPTURA MENSAGENS
+# CAPTURA DE NICK
 # ==============================
 @client.event
 async def on_message(message):
@@ -203,7 +201,10 @@ async def on_message(message):
         return
 
     if nick in participantes.values():
-        await message.delete()
+        try:
+            await message.delete()
+        except:
+            pass
         return
 
     participantes[message.author.id] = nick
@@ -231,7 +232,7 @@ async def on_message(message):
 async def on_ready():
     await init_db()
     asyncio.create_task(scheduler())
-    print("🚀 Bot online!")
+    print(f"✅ Bot online como {client.user}")
 
 # ==============================
 # START
