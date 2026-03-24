@@ -7,14 +7,12 @@ from datetime import datetime, timedelta
 import pytz
 
 # ==============================
-# TOKEN (CORRIGIDO PRA RAILWAY)
+# TOKEN
 # ==============================
 TOKEN = os.getenv("TOKEN")
 
 if not TOKEN:
-    print("❌ TOKEN não encontrado nas variáveis de ambiente!")
-    print("👉 No Railway configure exatamente assim:")
-    print("TOKEN=seu_token_aqui")
+    print("❌ TOKEN não configurado!")
     exit()
 else:
     print(f"✅ TOKEN carregado: {TOKEN[:10]}...")
@@ -56,6 +54,10 @@ tree = app_commands.CommandTree(client)
 lista_ativa = None
 participantes = {}
 mensagem_lista = None
+
+# 🔒 NOVO: controle anti-duplicação
+eventos_finalizados = set()
+ultimo_reset_dia = None
 
 # ==============================
 # BANCO
@@ -123,16 +125,16 @@ async def distribuir_pontos(canal_presenca, canal_pontos, nome):
 
     await canal_pontos.send(msg_ranking)
 
-    print(f"Lista fechada: {nome}")
-
     participantes = {}
     lista_ativa = None
     mensagem_lista = None
 
 # ==============================
-# SCHEDULER
+# SCHEDULER (ANTI DUPLICAÇÃO)
 # ==============================
 async def scheduler():
+    global eventos_finalizados, ultimo_reset_dia, lista_ativa, participantes, mensagem_lista
+
     await client.wait_until_ready()
 
     while not client.is_closed():
@@ -145,12 +147,15 @@ async def scheduler():
         )
 
         if not canal_presenca or not canal_pontos:
-            print("⚠️ Canais não encontrados...")
             await asyncio.sleep(30)
             continue
 
         now = datetime.now(TIMEZONE)
-        print(f"[{now.strftime('%H:%M:%S')}] Verificando eventos...")
+
+        # 🔄 Reset diário
+        if ultimo_reset_dia != now.date():
+            eventos_finalizados.clear()
+            ultimo_reset_dia = now.date()
 
         for nome, hora, dias in eventos:
             h, m = map(int, hora.split(":"))
@@ -165,9 +170,7 @@ async def scheduler():
             abrir = evento - timedelta(minutes=5)
             fechar = evento + timedelta(minutes=10)
 
-            global lista_ativa, participantes, mensagem_lista
-
-            # ABRIR LISTA
+            # ABRIR
             if abrir <= now <= abrir + timedelta(seconds=30):
                 if lista_ativa is None:
                     lista_ativa = nome
@@ -179,11 +182,10 @@ async def scheduler():
                         f"✍️ Envie seu nick no chat!"
                     )
 
-                    print(f"✅ Lista aberta: {nome}")
-
-            # FECHAR LISTA
+            # FECHAR (ANTI DUPLICADO)
             if fechar <= now <= fechar + timedelta(seconds=30):
-                if lista_ativa == nome:
+                if lista_ativa == nome and nome not in eventos_finalizados:
+                    eventos_finalizados.add(nome)
                     await distribuir_pontos(canal_presenca, canal_pontos, nome)
 
         await asyncio.sleep(30)
@@ -211,17 +213,9 @@ async def on_message(message):
     nick = message.content.strip().lower()
 
     if not nick or len(nick) > 15:
-        try:
-            await message.delete()
-        except:
-            pass
         return
 
     if nick in participantes.values():
-        try:
-            await message.delete()
-        except:
-            pass
         return
 
     participantes[message.author.id] = nick
@@ -239,8 +233,7 @@ async def on_message(message):
                 content=(
                     f"📋 **LISTA ABERTA — {lista_ativa}**\n\n"
                     f"👥 Participantes: {len(participantes)}\n\n"
-                    f"{lista_formatada}\n\n"
-                    f"✍️ Envie seu nick no chat!"
+                    f"{lista_formatada}"
                 )
             )
         except:
