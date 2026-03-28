@@ -43,7 +43,7 @@ eventos = [
     ("Zorlak", "01:10", None, 15, "🐉"),
 
     # 🛡️ CASTLE SIEGE (DOMINGO = 6)
-    ("Castle Siege", "21:00", [6], 50, "🛡️"),
+    ("Castle Siege", "21:10", [6], 50, "🛡️"),
 ]
 
 DB_PATH = "ranking.db"
