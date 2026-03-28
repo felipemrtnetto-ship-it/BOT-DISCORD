@@ -7,39 +7,43 @@ from datetime import datetime, timedelta
 import pytz
 
 # ==============================
-# CARREGAR .ENV
+# LOAD ENV
 # ==============================
 load_dotenv()
-
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 if not TOKEN:
-    raise Exception("❌ TOKEN não encontrado no .env!")
+    raise Exception("❌ TOKEN não encontrado!")
 
 # ==============================
 # CONFIG
 # ==============================
-PONTOS = 10
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 
 CANAL_PRESENCA_ID = 1423485053127753748
 CANAL_PONTOS_ID = 1423485889010602076
 
+# ==============================
+# EVENTOS (AGORA COM PONTOS + EMOJI)
+# ==============================
 eventos = [
-    ("Galia Black", "21:35", None),
-    ("Kundun", "13:10", None),
-    ("Kundun", "15:10", None),
-    ("Galia Black", "16:45", None),
-    ("Blood Wizard", "18:10", None),
-    ("Crusher Skeleton", "19:05", None),
-    ("Necromancer", "19:40", None),
-    ("Selupan", "20:10", None),
-    ("Skull Reaper", "20:50", None),
-    ("Gywen", "22:10", None),
-    ("HellMaine", "22:30", None),
-    ("Balgass", "23:00", [2, 5]),
-    ("Yorm", "23:40", None),
-    ("Zorlak", "01:10", None),
+    ("Galia Black", "21:35", None, 2, "🗡️"),
+    ("Kundun", "13:10", None, 2, "🐲"),
+    ("Kundun", "15:10", None, 2, "🐲"),
+    ("Galia Black", "16:45", None, 2, "🗡️"),
+    ("Blood Wizard", "18:10", None, 5, "🧙‍♂️"),
+    ("Crusher Skeleton", "19:05", None, 5, "💀"),
+    ("Necromancer", "19:40", None, 5, "☠️"),
+    ("Selupan", "20:10", None, 5, "🦂"),
+    ("Skull Reaper", "20:50", None, 5, "👻"),
+    ("Gywen", "22:10", None, 5, "🐺"),
+    ("HellMaine", "22:30", None, 20, "👿"),
+    ("Balgass", "23:00", [2, 5], 30, "🧌"),
+    ("Yorm", "23:40", None, 15, "🐗"),
+    ("Zorlak", "01:10", None, 15, "🐉"),
+
+    # 🛡️ CASTLE SIEGE (DOMINGO = 6)
+    ("Castle Siege", "21:00", [6], 50, "🛡️"),
 ]
 
 DB_PATH = "ranking.db"
@@ -50,10 +54,14 @@ client = discord.Client(intents=intents)
 
 lista_ativa = None
 participantes = {}
+usuarios_registrados = set()
 mensagem_lista = None
 
+evento_aberto_id = None
+evento_fechado_id = None
+
 # ==============================
-# BANCO
+# DATABASE
 # ==============================
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -68,7 +76,7 @@ async def init_db():
 # ==============================
 # FINALIZAR EVENTO
 # ==============================
-async def distribuir_pontos(canal_presenca, canal_pontos, nome):
+async def distribuir_pontos(canal_presenca, canal_pontos, nome, pontos, emoji):
     global participantes, lista_ativa, mensagem_lista
 
     lista_final = list(participantes.values())
@@ -81,12 +89,12 @@ async def distribuir_pontos(canal_presenca, canal_pontos, nome):
             if row:
                 await db.execute(
                     "UPDATE ranking SET pontos = pontos + ? WHERE nick=?",
-                    (PONTOS, nick),
+                    (pontos, nick),
                 )
             else:
                 await db.execute(
                     "INSERT INTO ranking (nick, pontos) VALUES (?,?)",
-                    (nick, PONTOS),
+                    (nick, pontos),
                 )
 
         await db.commit()
@@ -105,15 +113,15 @@ async def distribuir_pontos(canal_presenca, canal_pontos, nome):
     lista_txt = "\n".join([f"{i+1}. {n}" for i, n in enumerate(lista_final)])
 
     await canal_presenca.send(
-        f"🔒 **A Lista está fechada, até o próximo BOSS!**\n\n"
-        f"📋 **{nome} FINALIZADO**\n\n"
+        f"🔒 **Lista fechada!**\n\n"
+        f"{emoji} **{nome} FINALIZADO**\n\n"
         f"👥 Participantes:\n"
         f"{lista_txt if lista_txt else 'Nenhum participante.'}"
     )
 
     msg = "🏆 **RANKING GERAL – BOSSES**\n\n"
-    for i, (nick, pontos) in enumerate(ranking_geral, 1):
-        msg += f"{i}. {nick} — {pontos} pts\n"
+    for i, (nick, pts) in enumerate(ranking_geral, 1):
+        msg += f"{i}. {nick} — {pts} pts\n"
 
     await canal_pontos.send(msg)
 
@@ -126,22 +134,17 @@ async def distribuir_pontos(canal_presenca, canal_pontos, nome):
 # ==============================
 async def scheduler():
     global lista_ativa, participantes, mensagem_lista
+    global evento_aberto_id, evento_fechado_id, usuarios_registrados
 
     await client.wait_until_ready()
 
     while True:
-
         canal_presenca = client.get_channel(CANAL_PRESENCA_ID)
         canal_pontos = client.get_channel(CANAL_PONTOS_ID)
 
-        if not canal_presenca or not canal_pontos:
-            print("❌ Canal não encontrado!")
-            await asyncio.sleep(10)
-            continue
-
         now = datetime.now(TIMEZONE)
 
-        for nome, hora, dias in eventos:
+        for nome, hora, dias, pontos, emoji in eventos:
 
             h, m = map(int, hora.split(":"))
             evento = now.replace(hour=h, minute=m, second=0, microsecond=0)
@@ -152,32 +155,45 @@ async def scheduler():
             if dias and now.weekday() not in dias:
                 continue
 
+            evento_id = f"{nome}-{evento.date()}"
+
             abrir = evento - timedelta(minutes=5)
             fechar = evento + timedelta(minutes=10)
 
+            # ABRIR
             if abrir <= now <= abrir + timedelta(seconds=20):
-                if lista_ativa is None:
+                if lista_ativa is None and evento_aberto_id != evento_id:
+
+                    print(f"🟢 Abrindo: {nome}")
+
                     lista_ativa = nome
                     participantes = {}
+                    usuarios_registrados = set()
+                    evento_aberto_id = evento_id
 
                     mensagem_lista = await canal_presenca.send(
-                        f"📋 **LISTA ABERTA — {nome}**\n\n"
+                        f"{emoji} **LISTA ABERTA — {nome}**\n\n"
                         f"👥 Participantes: 0\n\n"
                         f"✍️ Envie seu nick!"
                     )
 
+            # FECHAR
             if fechar <= now <= fechar + timedelta(seconds=20):
-                if lista_ativa == nome:
-                    await distribuir_pontos(canal_presenca, canal_pontos, nome)
+                if lista_ativa == nome and evento_fechado_id != evento_id:
+
+                    print(f"🔴 Fechando: {nome}")
+
+                    evento_fechado_id = evento_id
+                    await distribuir_pontos(canal_presenca, canal_pontos, nome, pontos, emoji)
 
         await asyncio.sleep(20)
 
 # ==============================
-# CAPTURA DE NICK
+# CAPTURA NICK
 # ==============================
 @client.event
 async def on_message(message):
-    global participantes, mensagem_lista
+    global participantes, mensagem_lista, usuarios_registrados
 
     if message.author.bot:
         return
@@ -192,18 +208,18 @@ async def on_message(message):
             pass
         return
 
-    nick = message.content.strip()
-
-    if not nick:
-        return
-
-    if nick in participantes.values():
+    if message.author.id in usuarios_registrados:
         try:
             await message.delete()
         except:
             pass
         return
 
+    nick = message.content.strip()
+    if not nick:
+        return
+
+    usuarios_registrados.add(message.author.id)
     participantes[message.author.id] = nick
 
     try:
