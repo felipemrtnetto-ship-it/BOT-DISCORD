@@ -1,1 +1,3 @@
-.gitignore
+.env
+ranking.db
+__pycache__/
