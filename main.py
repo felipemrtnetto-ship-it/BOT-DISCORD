@@ -7,9 +7,6 @@ from datetime import datetime, timedelta
 import pytz
 
 # ==============================
-# LOAD ENV
-# ==============================
-load_dotenv()
 
 TOKEN = os.getenv("TOKEN")  # ✅ CORRIGIDO AQUI
 
