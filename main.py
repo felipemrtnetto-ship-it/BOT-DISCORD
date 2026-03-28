@@ -13,18 +13,18 @@ load_dotenv()
 TOKEN = (os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN") or "").strip().replace('"', '').replace("'", "")
 
 if not TOKEN:
-    raise Exception("Token não configurado no Railway.")
+    raise Exception("Token não encontrado no Railway.")
 
 # ==============================
-# ⚙️ CONFIGURAÇÕES DO BOT
+# ⚙️ CONFIGURAÇÕES
 # ==============================
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 CANAL_PRESENCA_ID = 1423485053127753748
-CANAL_PONTOS_ID = 1423485889010602076 # Atualizado conforme sua solicitação
+CANAL_PONTOS_ID = 1423485889010602076
 DB_PATH = "ranking.db"
 
 eventos = [
-    ("Galia Black", "12:05", None, 2, "🗡️"),
+    ("Galia Black", "21:35", None, 2, "🗡️"),
     ("Kundun", "13:10", None, 2, "🐲"),
     ("Kundun", "15:10", None, 2, "🐲"),
     ("Galia Black", "16:45", None, 2, "🗡️"),
@@ -45,10 +45,12 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
+# Estados Globais
 lista_ativa = None
 participantes = {}
 usuarios_registrados = set()
 mensagem_lista = None
+alerta_enviado = False
 
 # ==============================
 # 🗄️ BANCO DE DADOS
@@ -57,62 +59,58 @@ async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("CREATE TABLE IF NOT EXISTS ranking (nick TEXT PRIMARY KEY, pontos INTEGER DEFAULT 0)")
         await db.commit()
-    print("🗄️ Banco de dados pronto.")
 
 # ==============================
-# 🏆 LÓGICA DE PONTUAÇÃO
+# 🏆 LÓGICA DE PONTOS
 # ==============================
+async def gerar_ranking_embed():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT nick, pontos FROM ranking ORDER BY pontos DESC LIMIT 10")
+        ranking = await cur.fetchall()
+    
+    embed = discord.Embed(title="🏆 TOP 10 - RANKING GERAL", color=0xFFD700)
+    if not ranking:
+        embed.description = "Nenhum ponto registrado ainda."
+    else:
+        txt = ""
+        for i, (n, p) in enumerate(ranking, 1):
+            medalha = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"{i}º"
+            txt += f"{medalha} **{n}** — {p} pts\n"
+        embed.description = txt
+    return embed
+
 async def distribuir_pontos(canal_presenca, canal_pontos, nome, pontos, emoji):
-    global participantes, lista_ativa, mensagem_lista, usuarios_registrados
+    global participantes, lista_ativa, mensagem_lista, usuarios_registrados, alerta_enviado
     
-    nicks_para_premiar = list(participantes.values())
-    
+    nicks = list(participantes.values())
     try:
         async with aiosqlite.connect(DB_PATH) as db:
-            for nick in nicks_para_premiar:
-                await db.execute("""
-                    INSERT INTO ranking (nick, pontos) VALUES (?, ?)
-                    ON CONFLICT(nick) DO UPDATE SET pontos = pontos + excluded.pontos
-                """, (nick, pontos))
+            for nick in nicks:
+                await db.execute("INSERT INTO ranking (nick, pontos) VALUES (?, ?) ON CONFLICT(nick) DO UPDATE SET pontos = pontos + excluded.pontos", (nick, pontos))
             await db.commit()
-
-            cur = await db.execute("SELECT nick, pontos FROM ranking ORDER BY pontos DESC LIMIT 10")
-            ranking_geral = await cur.fetchall()
 
         if mensagem_lista:
             try: await mensagem_lista.delete()
             except: pass
 
-        await canal_presenca.send(
-            f"🔒 **{nome} ENCERRADO**\n"
-            f"✅ Pontos atribuídos: +{pontos}\n"
-            f"👥 Total: {len(nicks_para_premiar)} players."
-        )
+        embed_fim = discord.Embed(title=f"🔒 {nome} ENCERRADO", color=0xFF0000)
+        embed_fim.add_field(name="✅ Pontos", value=f"+{pontos}", inline=True)
+        embed_fim.add_field(name="👥 Players", value=len(nicks), inline=True)
+        await canal_presenca.send(embed=embed_fim)
 
-        rank_msg = "🏆 **TOP 10 RANKING GERAL**\n\n"
-        for i, (n, p) in enumerate(ranking_geral, 1):
-            rank_msg += f"{i}º {n} — {p} pts\n"
-        
         if canal_pontos:
-            await canal_pontos.send(rank_msg)
-        else:
-            print("❌ ERRO: Canal de pontos não encontrado.")
+            await canal_pontos.send(embed=await gerar_ranking_embed())
 
-    except Exception as e:
-        print(f"Erro ao processar ranking: {e}")
     finally:
-        participantes = {}
-        usuarios_registrados = set()
-        lista_ativa = None
-        mensagem_lista = None
+        participantes = {}; usuarios_registrados = set(); lista_ativa = None; alerta_enviado = False
 
 # ==============================
-# ⏰ AGENDADOR (SCHEDULER)
+# ⏰ SCHEDULER (COM ALERTAS)
 # ==============================
 async def scheduler():
-    global mensagem_lista, participantes, usuarios_registrados, lista_ativa
-
+    global mensagem_lista, participantes, usuarios_registrados, lista_ativa, alerta_enviado
     await client.wait_until_ready()
+    
     while not client.is_closed():
         try:
             now = datetime.now(TIMEZONE)
@@ -123,37 +121,33 @@ async def scheduler():
                 for nome, hora, dias, pontos, emoji in eventos:
                     h, m = map(int, hora.split(":"))
                     ev_hoje = now.replace(hour=h, minute=m, second=0, microsecond=0)
-                    
-                    # Se o evento já passou há mais de 1 hora, agendar para amanhã
-                    if ev_hoje < now - timedelta(hours=1):
-                        ev_hoje += timedelta(days=1)
-
-                    if dias and now.weekday() not in dias:
-                        continue
+                    if ev_hoje < now - timedelta(hours=1): ev_hoje += timedelta(days=1)
+                    if dias and now.weekday() not in dias: continue
 
                     abrir_em = ev_hoje - timedelta(minutes=5)
+                    alerta_em = ev_hoje + timedelta(minutes=5) # 5 min antes de fechar
                     fechar_em = ev_hoje + timedelta(minutes=10)
 
-                    # Abertura (Margem de 1 minuto)
-                    if abrir_em <= now <= abrir_em + timedelta(minutes=1) and not lista_ativa:
-                        lista_ativa = nome
-                        participantes = {}
-                        usuarios_registrados = set()
-                        mensagem_lista = await canal_presenca.send(
-                            f"{emoji} **LISTA ABERTA: {nome}**\n👉 Digite seu NICK abaixo!"
-                        )
+                    # Abertura
+                    if abrir_em <= now <= abrir_em + timedelta(seconds=40) and not lista_ativa:
+                        lista_ativa = nome; participantes = {}; usuarios_registrados = set()
+                        embed = discord.Embed(title=f"{emoji} LISTA ABERTA: {nome}", description="👉 Digite seu **NICK** abaixo!\n⏰ Fecha em 15 minutos.", color=0x00FF00)
+                        mensagem_lista = await canal_presenca.send(content="@everyone", embed=embed)
 
-                    # Fechamento (Margem de 1 minuto)
-                    if fechar_em <= now <= fechar_em + timedelta(minutes=1) and lista_ativa == nome:
+                    # Alerta de 5 minutos para fechar
+                    if alerta_em <= now <= alerta_em + timedelta(seconds=40) and lista_ativa == nome and not alerta_enviado:
+                        alerta_enviado = True
+                        await canal_presenca.send(f"⚠️ **ATENÇÃO @everyone**\nA lista de **{nome}** fecha em 5 minutos! Não esqueçam de registrar o nick!")
+
+                    # Fechamento
+                    if fechar_em <= now <= fechar_em + timedelta(seconds=40) and lista_ativa == nome:
                         await distribuir_pontos(canal_presenca, canal_pontos, nome, pontos, emoji)
 
-        except Exception as e:
-            print(f"Erro no scheduler: {e}")
-        
+        except Exception as e: print(f"Erro no scheduler: {e}")
         await asyncio.sleep(30)
 
 # ==============================
-# 🤖 EVENTOS DO DISCORD
+# 🤖 COMANDOS E MENSAGENS
 # ==============================
 @client.event
 async def on_ready():
@@ -164,42 +158,74 @@ async def on_ready():
 @client.event
 async def on_message(message):
     global participantes, mensagem_lista, usuarios_registrados, lista_ativa
+    if message.author.bot: return
 
-    if message.author.bot:
-        return
-
-    # Comando Administrador
-    if message.content == "!zerar_ranking":
-        if message.author.guild_permissions.administrator:
+    # --- COMANDOS ADM ---
+    if message.content.startswith("!add") and message.author.guild_permissions.administrator:
+        try:
+            _, nick, pts = message.content.split()
             async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("DROP TABLE IF EXISTS ranking")
+                await db.execute("INSERT INTO ranking (nick, pontos) VALUES (?, ?) ON CONFLICT(nick) DO UPDATE SET pontos = pontos + excluded.pontos", (nick, int(pts)))
                 await db.commit()
-            await init_db()
-            await message.channel.send("⚠️ **Ranking resetado com sucesso!**")
-        return
+            await message.channel.send(f"✅ {pts} pontos adicionados a **{nick}**.")
+        except: await message.channel.send("Uso: `!add [Nick] [Pontos]`")
 
-    # Lógica do Canal de Presença
+    if message.content.startswith("!remove") and message.author.guild_permissions.administrator:
+        try:
+            _, nick, pts = message.content.split()
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("UPDATE ranking SET pontos = MAX(0, pontos - ?) WHERE nick = ?", (int(pts), nick))
+                await db.commit()
+            await message.channel.send(f"⚠️ {pts} pontos removidos de **{nick}**.")
+        except: await message.channel.send("Uso: `!remove [Nick] [Pontos]`")
+
+    if message.content == "!fechar" and message.author.guild_permissions.administrator:
+        if lista_ativa:
+            c_pres = client.get_channel(CANAL_PRESENCA_ID)
+            c_pont = client.get_channel(CANAL_PONTOS_ID)
+            # Busca pontos do evento atual na lista de eventos
+            pts_evento = next((e[3] for e in eventos if e[0] == lista_ativa), 0)
+            emoji_evento = next((e[4] for e in eventos if e[0] == lista_ativa), "📝")
+            await distribuir_pontos(c_pres, c_pont, lista_ativa, pts_evento, emoji_evento)
+        else: await message.channel.send("Não há lista aberta.")
+
+    if message.content == "!zerar_ranking" and message.author.guild_permissions.administrator:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DROP TABLE IF EXISTS ranking"); await db.commit()
+        await init_db(); await message.channel.send("⚠️ Ranking Resetado!")
+
+    # --- COMANDOS PLAYER ---
+    if message.content == "!ranking":
+        await message.channel.send(embed=await gerar_ranking_embed())
+
+    if message.content.startswith("!meus_pontos"):
+        try:
+            nick = message.content.split()[1]
+            async with aiosqlite.connect(DB_PATH) as db:
+                cur = await db.execute("SELECT pontos FROM ranking WHERE nick = ?", (nick,))
+                res = await cur.fetchone()
+            pts = res[0] if res else 0
+            await message.channel.send(f"👤 **{nick}** possui **{pts}** pontos.")
+        except: await message.channel.send("Uso: `!meus_pontos [SeuNick]`")
+
+    # --- LÓGICA DA LISTA ---
     if message.channel.id == CANAL_PRESENCA_ID:
         if not lista_ativa or message.author.id in usuarios_registrados:
-            try: await message.delete()
-            except: pass
+            if not message.content.startswith("!"): # Não apaga comandos
+                try: await message.delete()
+                except: pass
             return
 
         nick = message.content.strip()
-        if 2 <= len(nick) <= 25:
+        if 2 <= len(nick) <= 20:
             usuarios_registrados.add(message.author.id)
             participantes[message.author.id] = nick
-            
-            try: 
+            try:
                 await message.delete()
                 if mensagem_lista:
-                    lista_txt = "\n".join([f"• {n}" for n in participantes.values()])
-                    await mensagem_lista.edit(content=(
-                        f"📋 **LISTA ATIVA: {lista_ativa}**\n"
-                        f"👥 Participantes: {len(participantes)}\n\n"
-                        f"{lista_txt}"
-                    ))
-            except: 
-                pass
+                    txt = "\n".join([f"• {n}" for n in participantes.values()])
+                    embed = discord.Embed(title=f"📋 LISTA ATIVA: {lista_ativa}", description=f"👥 Players: {len(participantes)}\n\n{txt}", color=0x00FF00)
+                    await mensagem_lista.edit(embed=embed)
+            except: pass
 
 client.run(TOKEN)
