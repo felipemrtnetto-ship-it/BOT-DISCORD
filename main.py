@@ -24,7 +24,7 @@ CANAL_PONTOS_ID = 1423485889010602076
 DB_PATH = "ranking.db"
 
 eventos = [
-    ("Galia Black", "21:35", None, 2, "🗡️"),
+    ("Galia Black", "10:45", None, 2, "🗡️"),
     ("Kundun", "13:10", None, 2, "🐲"),
     ("Kundun", "15:10", None, 2, "🐲"),
     ("Galia Black", "16:45", None, 2, "🗡️"),
