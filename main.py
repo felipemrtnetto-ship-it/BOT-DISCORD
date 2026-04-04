@@ -103,11 +103,8 @@ class MaratonaBot(discord.Client):
             try:
                 embed = discord.Embed(title=titulo, description=desc, color=cor, timestamp=datetime.now(TIMEZONE))
                 await canal.send(embed=embed)
-                print(f"DEBUG: Log enviado para {CANAL_LOGS_ID}")
             except Exception as e:
-                print(f"DEBUG: Erro ao enviar log: {e}")
-        else:
-            print(f"DEBUG: Canal de log {CANAL_LOGS_ID} não encontrado.")
+                print(f"Erro ao enviar log: {e}")
 
     async def atualizar_lista_msg(self):
         if self.mensagem_lista:
@@ -123,9 +120,20 @@ class MaratonaBot(discord.Client):
                 pass
 
     async def distribuir_pontos(self, nome, pts):
+        # --- REMOVE O BOTÃO DA MENSAGEM (FECHA A LISTA VISUALMENTE) ---
+        if self.mensagem_lista:
+            try:
+                embed_fechado = self.mensagem_lista.embeds[0]
+                embed_fechado.title = f"❌ LISTA ENCERRADA: {nome}"
+                embed_fechado.color = 0xe74c3c  # Vermelho
+                await self.mensagem_lista.edit(embed=embed_fechado, view=None)
+            except Exception as e:
+                print(f"Erro ao remover botões: {e}")
+
         if not self.participantes:
             await self.log_auditoria("⚠️ Lista Vazia", f"Evento **{nome}** sem participantes.", 0xe67e22)
             self.lista_ativa = None
+            self.mensagem_lista = None
             return
 
         try:
@@ -147,6 +155,7 @@ class MaratonaBot(discord.Client):
         finally:
             self.participantes = {}
             self.lista_ativa = None
+            self.mensagem_lista = None
 
     async def scheduler(self):
         await self.wait_until_ready()
@@ -165,6 +174,7 @@ class MaratonaBot(discord.Client):
                     t_abrir = (dt_boss - timedelta(minutes=5)).strftime("%H:%M")
                     t_fechar = (dt_boss + timedelta(minutes=10)).strftime("%H:%M")
 
+                    # Abre a lista 5 min antes do Boss
                     if hora_atual == t_abrir and self.lista_ativa != nome:
                         self.lista_ativa = nome
                         self.participantes = {}
@@ -173,6 +183,7 @@ class MaratonaBot(discord.Client):
                         self.mensagem_lista = await canal_pres.send(content="@everyone", embed=emb, view=PresencaView(self))
                         await self.log_auditoria("🔔 Lista Aberta", f"Evento: {nome}", 0x00FF00)
 
+                    # Fecha a lista 10 min depois do Boss (Soma total de 15 min aberta)
                     if hora_atual == t_fechar and self.lista_ativa == nome:
                         await self.distribuir_pontos(nome, pts)
             except Exception as e:
@@ -180,7 +191,7 @@ class MaratonaBot(discord.Client):
             await asyncio.sleep(30)
 
 # ==============================
-# 🎮 COMANDOS
+# 🎮 EXECUÇÃO E COMANDOS
 # ==============================
 client = MaratonaBot()
 
@@ -192,7 +203,6 @@ async def on_ready():
 async def on_message(message):
     if message.author.bot: return
 
-    # COMANDOS ADM
     if message.author.guild_permissions.administrator:
         if message.content.startswith("!addpontos"):
             try:
@@ -221,7 +231,6 @@ async def on_message(message):
             emb = discord.Embed(title="🧪 TESTE", description="Clique no botão!", color=0x00FFFF)
             client.mensagem_lista = await canal.send(embed=emb, view=PresencaView(client))
 
-    # COMANDO PÚBLICO
     if message.content == "!ranking":
         conn = await asyncpg.connect(DATABASE_URL)
         rows = await conn.fetch("SELECT nick, pontos FROM ranking ORDER BY pontos DESC LIMIT 20")
