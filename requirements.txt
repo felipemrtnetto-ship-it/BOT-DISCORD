@@ -1,4 +1,5 @@
 discord.py
 aiosqlite
+asyncpg
 python-dotenv
 pytz
