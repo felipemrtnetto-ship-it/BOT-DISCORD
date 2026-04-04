@@ -14,7 +14,6 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Ajuste de URL para o asyncpg (Railway)
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -25,7 +24,7 @@ CANAL_PRESENCA_ID = 1423485053127753748
 CANAL_PONTOS_ID = 1423485889010602076
 CANAL_LOGS_ID = 1489805148204040312
 
-# Tabela de Horários: (Nome, Hora do Boss, Dias [None=Todos], Pontos, Emoji)
+# Tabela de Horários
 eventos = [
     ("Galia Black", "10:45", None, 2, "🗡️"),
     ("Kundun", "13:10", None, 2, "🐲"),
@@ -120,12 +119,11 @@ class MaratonaBot(discord.Client):
                 pass
 
     async def distribuir_pontos(self, nome, pts):
-        # --- REMOVE O BOTÃO DA MENSAGEM (FECHA A LISTA VISUALMENTE) ---
         if self.mensagem_lista:
             try:
                 embed_fechado = self.mensagem_lista.embeds[0]
                 embed_fechado.title = f"❌ LISTA ENCERRADA: {nome}"
-                embed_fechado.color = 0xe74c3c  # Vermelho
+                embed_fechado.color = 0xe74c3c
                 await self.mensagem_lista.edit(embed=embed_fechado, view=None)
             except Exception as e:
                 print(f"Erro ao remover botões: {e}")
@@ -174,7 +172,6 @@ class MaratonaBot(discord.Client):
                     t_abrir = (dt_boss - timedelta(minutes=5)).strftime("%H:%M")
                     t_fechar = (dt_boss + timedelta(minutes=10)).strftime("%H:%M")
 
-                    # Abre a lista 5 min antes do Boss
                     if hora_atual == t_abrir and self.lista_ativa != nome:
                         self.lista_ativa = nome
                         self.participantes = {}
@@ -183,7 +180,6 @@ class MaratonaBot(discord.Client):
                         self.mensagem_lista = await canal_pres.send(content="@everyone", embed=emb, view=PresencaView(self))
                         await self.log_auditoria("🔔 Lista Aberta", f"Evento: {nome}", 0x00FF00)
 
-                    # Fecha a lista 10 min depois do Boss (Soma total de 15 min aberta)
                     if hora_atual == t_fechar and self.lista_ativa == nome:
                         await self.distribuir_pontos(nome, pts)
             except Exception as e:
@@ -231,12 +227,31 @@ async def on_message(message):
             emb = discord.Embed(title="🧪 TESTE", description="Clique no botão!", color=0x00FFFF)
             client.mensagem_lista = await canal.send(embed=emb, view=PresencaView(client))
 
+    # --- COMANDO RANKING ATUALIZADO PARA TODOS OS PLAYERS ---
     if message.content == "!ranking":
-        conn = await asyncpg.connect(DATABASE_URL)
-        rows = await conn.fetch("SELECT nick, pontos FROM ranking ORDER BY pontos DESC LIMIT 20")
-        await conn.close()
-        emb = discord.Embed(title="🏆 RANKING ATUAL", color=0xFFD700)
-        emb.description = "\n".join([f"**{i+1}º** {r['nick']} — `{r['pontos']} pts`" for i, r in enumerate(rows)]) if rows else "Vazio"
-        await message.channel.send(embed=emb)
+        try:
+            conn = await asyncpg.connect(DATABASE_URL)
+            # Removido o LIMIT 20 para pegar todos
+            rows = await conn.fetch("SELECT nick, pontos FROM ranking ORDER BY pontos DESC")
+            await conn.close()
+
+            if not rows:
+                return await message.channel.send("📭 O ranking está vazio.")
+
+            # Montagem do ranking com suporte a muitas mensagens (evita erro de 2000 caracteres)
+            linhas = [f"**{i+1}º** {r['nick']} — `{r['pontos']} pts`" for i, r in enumerate(rows)]
+            
+            # Divide as linhas em grupos de 25 para não estourar o limite do Embed
+            chunks = [linhas[i:i + 25] for i in range(0, len(linhas), 25)]
+
+            for index, chunk in enumerate(chunks):
+                titulo = "🏆 RANKING COMPLETO" if index == 0 else f"🏆 RANKING (CONT. {index+1})"
+                emb = discord.Embed(title=titulo, color=0xFFD700)
+                emb.description = "\n".join(chunk)
+                await message.channel.send(embed=emb)
+                
+        except Exception as e:
+            print(f"Erro no ranking: {e}")
+            await message.channel.send("❌ Erro ao processar o ranking.")
 
 client.run(TOKEN)
