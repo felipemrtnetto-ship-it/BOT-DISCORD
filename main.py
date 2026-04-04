@@ -60,15 +60,16 @@ async def init_db():
         print(f"❌ Erro no Banco: {e}")
 
 # ==============================
-# 🔘 INTERFACE (BOTÃO)
+# 🔘 INTERFACE (SISTEMA DE BOTÃO)
 # ==============================
 class PresencaView(View):
     def __init__(self, bot):
         super().__init__(timeout=None)
         self.bot = bot
 
+    # Adicionado o parâmetro 'button' para evitar o TypeError
     @discord.ui.button(label="Marcar Presença", style=discord.ButtonStyle.green, custom_id="btn_pres_v2", emoji="✅")
-    async def marcar_presenca(self, interaction: discord.Interaction):
+    async def marcar_presenca(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.bot.lista_ativa:
             return await interaction.response.send_message("❌ Nenhuma lista aberta!", ephemeral=True)
         
@@ -132,6 +133,7 @@ class MaratonaBot(discord.Client):
             await conn.close()
             
             await self.log_auditoria("💰 Pontos Pagos", f"Evento: {nome}\nPlayers: {len(self.participantes)}", 0x27ae60)
+            
             canal_pts = self.get_channel(CANAL_PONTOS_ID)
             if canal_pts:
                 await canal_pts.send(f"✅ **{nome}** finalizado! **{len(self.participantes)}** players ganharam **{pts}** pts.")
@@ -143,6 +145,7 @@ class MaratonaBot(discord.Client):
 
     async def scheduler(self):
         await self.wait_until_ready()
+        print(f"⏰ Scheduler iniciado.")
         while not self.is_closed():
             try:
                 now = datetime.now(TIMEZONE)
@@ -160,7 +163,7 @@ class MaratonaBot(discord.Client):
                     if hora_atual == t_abrir and self.lista_ativa != nome:
                         self.lista_ativa = nome
                         self.participantes = {}
-                        emb = discord.Embed(title=f"{emoji} LISTA ABERTA: {nome}", description="Clique no botão!", color=0x00FF00)
+                        emb = discord.Embed(title=f"{emoji} LISTA ABERTA: {nome}", description="Clique no botão abaixo!", color=0x00FF00)
                         self.mensagem_lista = await canal_pres.send(content="@everyone", embed=emb, view=PresencaView(self))
 
                     if hora_atual == t_fechar and self.lista_ativa == nome:
@@ -187,7 +190,7 @@ async def on_message(message):
         if canal:
             client.lista_ativa = "Teste Manual"
             client.participantes = {}
-            emb = discord.Embed(title="🧪 TESTE", description="Clique no botão!", color=0x00FFFF)
+            emb = discord.Embed(title="🧪 TESTE", description="Clique no botão abaixo!", color=0x00FFFF)
             client.mensagem_lista = await canal.send(embed=emb, view=PresencaView(client))
         else:
             await message.channel.send("❌ Canal de presença não encontrado.")
@@ -198,7 +201,7 @@ async def on_message(message):
             rows = await conn.fetch("SELECT nick, pontos FROM ranking ORDER BY pontos DESC LIMIT 20")
             await conn.close()
             emb = discord.Embed(title="🏆 RANKING", color=0xFFD700)
-            txt = "\n".join([f"**{i+1}º** {r['nick']} — `{r['pontos']} pts`" for i, r in enumerate(rows)]) if rows else "Vazio"
+            txt = "\n".join([f"**{i+1}º** {r['nick']} — `{r['pontos']} pts`" for i, r in enumerate(rows)]) if rows else "Ranking ainda vazio."
             emb.description = txt
             await message.channel.send(embed=emb)
         except Exception as e:
