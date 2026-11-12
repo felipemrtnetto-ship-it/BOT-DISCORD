@@ -216,9 +216,10 @@ class MaratonaBot(discord.Client):
 
         self.pool = None
         self.lista_ativa = None
-        self.pontos_lista_ativa = 0  # Guarda os pontos do evento atual
+        self.pontos_lista_ativa = 0
         self.participantes = {}
         self.mensagem_lista = None
+        self.tarefa_auto_fechar = None  # Guarda a tarefa de fechar sozinho em 10 min
 
         self.eventos_abertos = set()
         self.eventos_fechados = set()
@@ -333,6 +334,10 @@ class MaratonaBot(discord.Client):
             logger.error("Canal de presença indisponível.")
             return False
 
+        # Cancela timer anterior caso exista por segurança
+        if self.tarefa_auto_fechar and not self.tarefa_auto_fechar.done():
+            self.tarefa_auto_fechar.cancel()
+
         self.lista_ativa = nome
         self.pontos_lista_ativa = pts
         self.participantes = {}
@@ -342,6 +347,7 @@ class MaratonaBot(discord.Client):
             description=(
                 f"Horário/Previsão: **{horario}**\n"
                 f"⭐ **Recompensa:** `{pts} pontos`\n"
+                "⏱️ *Fecha automaticamente em 10 minutos.*\n"
                 "Clique no botão abaixo para participar!"
             ),
             color=0x00ff00
@@ -365,6 +371,14 @@ class MaratonaBot(discord.Client):
 
             logger.info("Lista aberta: %s", nome)
 
+            # Agenda o fechamento automático de QUALQUER lista em 10 minutos (600 segundos)
+            async def auto_fechar_geral():
+                await asyncio.sleep(600)
+                if self.lista_ativa == nome:
+                    await self.distribuir_pontos(nome, self.pontos_lista_ativa)
+
+            self.tarefa_auto_fechar = asyncio.create_task(auto_fechar_geral())
+
             return True
 
         except discord.DiscordException:
@@ -373,6 +387,10 @@ class MaratonaBot(discord.Client):
             return False
 
     async def distribuir_pontos(self, nome, pts):
+
+        # Cancela o timer se fechou antes dos 10 min
+        if self.tarefa_auto_fechar and not self.tarefa_auto_fechar.done():
+            self.tarefa_auto_fechar.cancel()
 
         if self.mensagem_lista:
 
@@ -466,6 +484,8 @@ class MaratonaBot(discord.Client):
         self.lista_ativa = None
         self.pontos_lista_ativa = 0
         self.mensagem_lista = None
+        if self.tarefa_auto_fechar and not self.tarefa_auto_fechar.done():
+            self.tarefa_auto_fechar.cancel()
 
     @tasks.loop(seconds=15)
     async def scheduler_loop(self):
@@ -681,14 +701,6 @@ async def on_message(message):
                 "✅ Lista de teste criada! Fechará automaticamente em **10 minutos** (sem pontuar)."
             )
 
-            # Tarefa em segundo plano para fechar o teste sozinho após 10 minutos
-            async def auto_fechar_teste():
-                await asyncio.sleep(600)  # 600 segundos = 10 minutos
-                if client.lista_ativa == "Teste Manual":
-                    await client.distribuir_pontos("Teste Manual", 5)
-
-            asyncio.create_task(auto_fechar_teste())
-
         else:
 
             await message.channel.send(
@@ -711,20 +723,19 @@ async def on_message(message):
             if len(partes) < 3:
                 raise ValueError()
 
-            # Exemplo: !abrir Nightmare 15 (o nome pode ter várias palavras)
             pts = int(partes[-1])
             nome_boss = " ".join(partes[1:-1])
 
             sucesso = await client.abrir_lista(
                 nome_boss,
-                "Manual / Personalizado",
+                "Manual / Personalizado (10 min)",
                 pts,
                 "🔥"
             )
 
             if sucesso:
                 await message.channel.send(
-                    f"✅ Lista do boss **{nome_boss}** aberta com sucesso valendo **{pts} pontos**!"
+                    f"✅ Lista do boss **{nome_boss}** aberta valendo **{pts} pontos**! Fechará automaticamente em **10 minutos**."
                 )
             else:
                 await message.channel.send(
@@ -765,6 +776,9 @@ async def on_message(message):
             return
 
         nome_atual = client.lista_ativa
+
+        if client.tarefa_auto_fechar and not client.tarefa_auto_fechar.done():
+            client.tarefa_auto_fechar.cancel()
 
         if client.mensagem_lista:
             try:
