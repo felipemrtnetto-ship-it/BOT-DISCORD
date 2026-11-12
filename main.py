@@ -631,135 +631,134 @@ async def on_message(message):
 
     conteudo = message.content.strip()
 
-    if message.author.guild_permissions.administrator:
+    # TRAVA DE ADMINISTRADOR REMOVIDA TEMPORARIAMENTE PARA TESTES
+    if conteudo == "!painel":
+        embed = discord.Embed(
+            title=f"🛡️ {BOT_NAME} | CENTRAL DO JOGADOR",
+            description=(
+                "Clique no botão abaixo para abrir a sua **aba privada**.\n"
+                "Dentro dela, somente você e a administração podem visualizar suas informações e consultar seus pontos atualizados em tempo real!"
+            ),
+            color=0x2ecc71
+        )
+        await message.channel.send(embed=embed, view=AbrirAbaView(client))
+        try:
+            await message.delete()
+        except discord.DiscordException:
+            pass
 
-        if conteudo == "!painel":
-            embed = discord.Embed(
-                title=f"🛡️ {BOT_NAME} | CENTRAL DO JOGADOR",
-                description=(
-                    "Clique no botão abaixo para abrir a sua **aba privada**.\n"
-                    "Dentro dela, somente você e a administração podem visualizar suas informações e consultar seus pontos atualizados em tempo real!"
-                ),
-                color=0x2ecc71
-            )
-            await message.channel.send(embed=embed, view=AbrirAbaView(client))
-            try:
-                await message.delete()
-            except discord.DiscordException:
-                pass
+    elif conteudo.startswith("!addpontos"):
 
-        elif conteudo.startswith("!addpontos"):
+        try:
 
-            try:
+            if not message.mentions:
+                raise ValueError()
 
-                if not message.mentions:
-                    raise ValueError()
+            partes = conteudo.split()
 
-                partes = conteudo.split()
+            if len(partes) < 3:
+                raise ValueError()
 
-                if len(partes) < 3:
-                    raise ValueError()
+            usuario = message.mentions[0]
+            qtd = int(partes[2])
 
-                usuario = message.mentions[0]
-                qtd = int(partes[2])
+            async with client.pool.acquire() as conn:
 
-                async with client.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO ranking
+                        (user_id, nick, pontos)
+                    VALUES ($1, $2, $3)
 
-                    await conn.execute(
-                        """
-                        INSERT INTO ranking
-                            (user_id, nick, pontos)
-                        VALUES ($1, $2, $3)
-
-                        ON CONFLICT (user_id)
-                        DO UPDATE SET
-                            pontos = ranking.pontos + EXCLUDED.pontos,
-                            nick = EXCLUDED.nick
-                        """,
-                        usuario.id,
-                        usuario.display_name,
-                        qtd
-                    )
-
-                await message.channel.send(
-                    f"✅ Adicionado **{qtd}** pts para "
-                    f"{usuario.mention}!"
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET
+                        pontos = ranking.pontos + EXCLUDED.pontos,
+                        nick = EXCLUDED.nick
+                    """,
+                    usuario.id,
+                    usuario.display_name,
+                    qtd
                 )
 
-                await client.log_auditoria(
-                    "Ponto Manual",
-                    f"ADM: {message.author}\n"
-                    f"Jogador: {usuario.display_name}\n"
-                    f"Pontos: {qtd}"
-                )
-
-            except ValueError:
-
-                await message.channel.send(
-                    "Use: `!addpontos @usuario 10`"
-                )
-
-            except Exception:
-
-                logger.exception("Erro em !addpontos.")
-
-                await message.channel.send(
-                    "❌ Erro ao adicionar pontos."
-                )
-
-        elif conteudo == "!zerar_ranking":
-
-            try:
-
-                async with client.pool.acquire() as conn:
-                    await conn.execute("DELETE FROM ranking")
-
-                await message.channel.send(
-                    "⚠️ **RANKING RESETADO!**"
-                )
-
-                await client.log_auditoria(
-                    "Ranking Resetado",
-                    f"Ranking zerado por {message.author}.",
-                    0xff0000
-                )
-
-            except Exception:
-
-                logger.exception("Erro ao zerar ranking.")
-
-                await message.channel.send(
-                    "❌ Erro ao zerar ranking."
-                )
-
-        elif conteudo == "!testar":
-
-            if client.lista_ativa is not None:
-
-                await message.channel.send(
-                    f"⚠️ Já existe uma lista ativa: "
-                    f"**{client.lista_ativa}**."
-                )
-
-                return
-
-            sucesso = await client.abrir_lista(
-                "Teste Manual",
-                "Manual",
-                "🧪"
+            await message.channel.send(
+                f"✅ Adicionado **{qtd}** pts para "
+                f"{usuario.mention}!"
             )
 
-            if sucesso:
+            await client.log_auditoria(
+                "Ponto Manual",
+                f"ADM: {message.author}\n"
+                f"Jogador: {usuario.display_name}\n"
+                f"Pontos: {qtd}"
+            )
 
-                await message.channel.send(
-                    "✅ Lista de teste criada!"
-                )
+        except ValueError:
 
-            else:
+            await message.channel.send(
+                "Use: `!addpontos @usuario 10`"
+            )
 
-                await message.channel.send(
-                    "❌ Não foi possível criar a lista."
-                )
+        except Exception:
+
+            logger.exception("Erro em !addpontos.")
+
+            await message.channel.send(
+                "❌ Erro ao adicionar pontos."
+            )
+
+    elif conteudo == "!zerar_ranking":
+
+        try:
+
+            async with client.pool.acquire() as conn:
+                await conn.execute("DELETE FROM ranking")
+
+            await message.channel.send(
+                "⚠️ **RANKING RESETADO!**"
+            )
+
+            await client.log_auditoria(
+                "Ranking Resetado",
+                f"Ranking zerado por {message.author}.",
+                0xff0000
+            )
+
+        except Exception:
+
+            logger.exception("Erro ao zerar ranking.")
+
+            await message.channel.send(
+                "❌ Erro ao zerar ranking."
+            )
+
+    elif conteudo == "!testar":
+
+        if client.lista_ativa is not None:
+
+            await message.channel.send(
+                f"⚠️ Já existe uma lista ativa: "
+                f"**{client.lista_ativa}**."
+            )
+
+            return
+
+        sucesso = await client.abrir_lista(
+            "Teste Manual",
+            "Manual",
+            "🧪"
+        )
+
+        if sucesso:
+
+            await message.channel.send(
+                "✅ Lista de teste criada!"
+            )
+
+        else:
+
+            await message.channel.send(
+                "❌ Não foi possível criar a lista."
+            )
 
     if conteudo == "!ranking":
 
