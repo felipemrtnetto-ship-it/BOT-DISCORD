@@ -43,7 +43,7 @@ BOSSES = [
     ("Galia Black", "20:30", None, "Lost Tower 1 (à esquerda do /move)", "166, 77", "🦇", 15),
     ("Gwyn, o Senhor das Cinzas", "22:10", None, "Dungeon 3", "25, 72", "🔥", 20),
     ("Hellmaine", "22:30", None, "Aida (/hellmaine)", "115, 100", "🐺", 25),
-    ("Balgass", "23:00", [2, 5], "Crywolf Fortress", "112, 80 (Somente quartas e sábados)", "👑", 30),
+    ("Balgass", "23:00", [2, 5], "Crywolf Fortress", "112, 80 (Somente quartas e sábados)", "👑", 50),
     ("Yhorm", "23:40", None, "/lorencia1", "22, 46", "🛡️", 20),
     ("Zorlak", "01:10", None, "Lorencia", "Spawn aleatório", "⚡", 15),
 ]
@@ -229,4 +229,50 @@ async def verificar_boss():
 
                     if await alerta_ja_postado_recentemente(canal_alertas, nome):
                         alertas_enviados_memoria.add(chave_10)
-                        estado[chave_1
+                        estado[chave_10] = True
+                        salvar_estado(estado)
+                        continue
+
+                    alertas_enviados_memoria.add(chave_10)
+                    estado[chave_10] = True
+                    salvar_estado(estado)
+
+                    embed_10 = discord.Embed(
+                        title=f"🔥 BOSS {emoji} {nome} NASCENDO EM 10 MINUTOS! 🔥",
+                        description=f"⏰ **Horário:** {horario}\n📍 **Mapa:** {mapa} (`{coords}`)\n🏆 **Vale:** {pontos} pontos\n\n*Corram para o local!*",
+                        color=0xffa500
+                    )
+                    msg_alerta = await canal_alertas.send(
+                        content="@everyone",
+                        embed=embed_10,
+                        allowed_mentions=discord.AllowedMentions(everyone=True)
+                    )
+                    
+                    asyncio.create_task(apagar_mensagem_depois(msg_alerta, 900))
+
+async def apagar_mensagem_depois(mensagem, segundos):
+    await asyncio.sleep(segundos)
+    try:
+        await mensagem.delete()
+    except discord.NotFound:
+        pass
+    except discord.DiscordException:
+        pass
+
+# ===============================
+# READY
+# ===============================
+
+@bot.event
+async def on_ready():
+    print(f"🛡️ Bot conectado com sucesso como {bot.user}")
+    if not verificar_boss.is_running():
+        verificar_boss.start()
+        print("🚀 Loop de verificação iniciado com sucesso!")
+
+# ===============================
+# EXECUÇÃO
+# ===============================
+
+if __name__ == "__main__":
+    bot.run(TOKEN)
