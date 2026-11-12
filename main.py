@@ -387,6 +387,16 @@ class MaratonaBot(discord.Client):
             except (discord.DiscordException, IndexError):
                 logger.exception("Erro ao encerrar lista.")
 
+        # SEGURANÇA: Se for lista de teste, encerra o painel mas NUNCA pontua o ranking
+        if nome == "Teste Manual":
+            await self.log_auditoria(
+                "Teste Encerrado",
+                f"A lista de teste **{nome}** foi encerrada sem pontuação.",
+                0xe67e22
+            )
+            self.limpar_lista()
+            return
+
         if not self.participantes:
 
             await self.log_auditoria(
@@ -685,7 +695,7 @@ async def on_message(message):
         await client.distribuir_pontos(nome_atual, 5)
 
         await message.channel.send(
-            f"✅ Lista de **{nome_atual}** fechada e pontuada com sucesso!"
+            f"✅ Lista de **{nome_atual}** fechada com sucesso!"
         )
 
     elif conteudo == "!fechar_sem_pontos" or conteudo == "!cancelar":
