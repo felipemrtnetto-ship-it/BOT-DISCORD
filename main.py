@@ -29,13 +29,12 @@ intents.guilds = True
 bot = discord.Client(intents=intents)
 
 lock = asyncio.Lock()
-alertas_enviados_memoria = set()  # Trava rápida na memória RAM
+alertas_enviados_memoria = set()
 
 # ===============================
 # BOSSES (APENAS OS QUE VALEM PONTOS / ATIVOS)
 # ===============================
 
-# Formato: (Nome, Horário, Dias, Mapa, Coordenadas, Emoji, Pontos)
 BOSSES = [
     ("Blood Wizard", "18:10", None, "Devias (/pvp2)", "159, 32", "🧙‍♂️", 10),
     ("Crusher Skeleton", "19:05", None, "Lorencia", "Spawn aleatório", "💀", 15),
@@ -162,7 +161,7 @@ async def alerta_ja_postado_recentemente(canal, nome_boss):
     return False
 
 # ===============================
-# LOOP PRINCIPAL (PAINEL + ALERTA ÚNICO DE 10 MIN)
+# LOOP PRINCIPAL (EDITA A MESMA MENSAGEM DO PAINEL)
 # ===============================
 
 @tasks.loop(seconds=5)
@@ -170,7 +169,7 @@ async def verificar_boss():
     async with lock:
         agora = datetime.now(TIMEZONE)
 
-        # 1. ATUALIZAÇÃO DO PAINEL DE HORÁRIOS
+        # 1. ATUALIZAÇÃO DO PAINEL DE HORÁRIOS (EDITANDO A MENSAGEM EXISTENTE)
         canal_painel = bot.get_channel(CANAL_PAINEL_ID)
         if not canal_painel:
             try:
@@ -180,20 +179,35 @@ async def verificar_boss():
 
         if canal_painel:
             embed_painel = criar_embed_agenda_detalhada(agora)
-
             msg_id = estado.get("id_mensagem_painel")
+            msg_painel = None
+
             if msg_id:
                 try:
-                    msg_antiga = await canal_painel.fetch_message(msg_id)
-                    await msg_antiga.delete()
-                except discord.NotFound:
-                    pass
-                except discord.DiscordException:
+                    msg_painel = await canal_painel.fetch_message(msg_id)
+                except (discord.NotFound, discord.HTTPException):
+                    msg_painel = None
+
+            # Se não encontrou a mensagem anterior guardada, procura nas últimas do bot no canal
+            if not msg_painel:
+                try:
+                    async for m in canal_painel.history(limit=10):
+                        if m.author == bot.user and m.embeds and "HORÁRIOS DE BOSSES" in (m.embeds[0].title or ""):
+                            msg_painel = m
+                            break
+                except Exception:
                     pass
 
-            nova_msg = await canal_painel.send(embed=embed_painel)
-            estado["id_mensagem_painel"] = nova_msg.id
-            salvar_estado(estado)
+            if msg_painel:
+                try:
+                    await msg_painel.edit(embed=embed_painel)
+                except discord.HTTPException:
+                    pass
+            else:
+                # Se realmente não existir nenhuma, cria a primeira
+                nova_msg = await canal_painel.send(embed=embed_painel)
+                estado["id_mensagem_painel"] = nova_msg.id
+                salvar_estado(estado)
 
         # 2. CANAL DE ALERTAS (SOMENTE 10 MINUTOS ANTES)
         canal_alertas = bot.get_channel(CANAL_ALERTAS_ID)
@@ -222,7 +236,6 @@ async def verificar_boss():
                 data_hoje = agora.strftime('%Y-%m-%d')
                 chave_10 = f"{nome}_{horario}_{data_hoje}_10min"
 
-                # Janela de 10 minutos antes (590 a 600 segundos)
                 if 590 <= diferenca <= 600:
                     if chave_10 in alertas_enviados_memoria or estado.get(chave_10):
                         continue
