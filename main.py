@@ -36,8 +36,6 @@ CANAL_LOGS_ID = 1570235263853133854
 # =====================================================
 # HORÁRIOS DOS EVENTOS (ATUALIZADOS)
 # =====================================================
-# Formato: (Nome, Horário, Dias da Semana [None = Todos], Pontos, Emoji)
-# Nota: weekday() no Python -> Segunda = 0, Terça = 1, Quarta = 2, Quinta = 3, Sexta = 4, Sábado = 5, Domingo = 6
 eventos = [
     ("Blood Wizard", "18:10", None, 5, "🧙‍♂️"),
     ("Crusher Skeleton", "19:05", None, 5, "💀"),
@@ -129,7 +127,7 @@ class PresencaView(View):
 
 
 # =====================================================
-# BOTÃO DE CONSULTAR PONTOS (DENTRO DA ABA PRIVADA)
+# BOTÃO DE CONSULTAR PONTOS
 # =====================================================
 
 class MeuPerfilView(View):
