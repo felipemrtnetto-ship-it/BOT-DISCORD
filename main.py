@@ -28,6 +28,7 @@ ARQUIVO_ESTADO = "estado.json"
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
+intents.members = True  # Necessário para resolver nomes
 
 bot = discord.Client(intents=intents)
 
@@ -159,11 +160,24 @@ def criar_embed_ranking():
     if not ranking_atual:
         embed.add_field(name="📊 Placar Vazio", value="Ainda não há pontuações registadas.", inline=False)
     else:
-        ranking_ordenado = sorted(ranking_atual.items(), key=lambda item: item[1], reverse=True)
+        # ranking_atual agora usa user_id como chave e guarda {"pontos": x, "nome": "Nome"}
+        ranking_ordenado = sorted(
+            ranking_atual.items(),
+            key=lambda item: item[1].get("pontos", 0) if isinstance(item[1], dict) else item[1],
+            reverse=True
+        )
         linhas = []
-        for posicao, (membro, pontos) in enumerate(ranking_ordenado, start=1):
+        for posicao, (user_id, dados) in enumerate(ranking_ordenado, start=1):
+            if isinstance(dados, dict):
+                pontos = dados.get("pontos", 0)
+                nome = dados.get("nome", f"ID:{user_id}")
+            else:
+                # Compatibilidade com ranking antigo (apenas pontos)
+                pontos = dados
+                nome = f"ID:{user_id}"
+            
             medalha = "🥇" if posicao == 1 else "🥈" if posicao == 2 else "🥉" if posicao == 3 else f"`#{posicao}`"
-            linhas.append(f"{medalha} **{membro}** — `{pontos} pts`")
+            linhas.append(f"{medalha} **{nome}** — `{pontos} pts`")
         
         bloco_atual = ""
         for linha in linhas:
@@ -173,7 +187,9 @@ def criar_embed_ranking():
             bloco_atual += linha + "\n"
         if bloco_atual:
             embed.add_field(name="🏅 Placar Completo", value=bloco_atual, inline=False)
-    embed.set_footer(text=f"Atualizado automaticamente • Total de membros: {len(ranking_atual)}")
+    
+    total = len(ranking_atual)
+    embed.set_footer(text=f"Atualizado automaticamente • Total de membros: {total}")
     return embed
 
 def criar_embed_consulta():
@@ -190,33 +206,60 @@ def criar_embed_consulta():
 
 class ViewConsultaPontos(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=None)  # Persistente para o painel de consulta
+        super().__init__(timeout=None)
 
     @discord.ui.button(label="⭐ Meus Pontos", style=discord.ButtonStyle.blurple, custom_id="btn_meus_pontos")
     async def meus_pontos(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # RESPOSTA IMEDIATA COM DEFER PARA EVITAR "O APLICATIVO NÃO RESPONDEU A TEMPO"
+        # Resposta IMEDIATA (obrigatório para evitar timeout)
         await interaction.response.defer(ephemeral=True)
 
-        usuario = interaction.user.display_name
-        ranking = estado.get("ranking", {})
-        
-        # Ordena o ranking para calcular a posição exata
-        ranking_ordenado = sorted(ranking.items(), key=lambda item: item[1], reverse=True)
-        
-        pontos_usuario = ranking.get(usuario, 0)
-        posicao_usuario = None
-        
-        for idx, (membro, pts) in enumerate(ranking_ordenado, start=1):
-            if membro == usuario:
-                posicao_usuario = idx
-                break
+        try:
+            user_id = str(interaction.user.id)
+            ranking = estado.get("ranking", {})
 
-        if posicao_usuario:
-            resposta = f"📊 **Consulta de Pontuação**\n\n👤 **Membro:** {usuario}\n🏆 **Pontos Atuais:** `{pontos_usuario} pts`\n🏅 **Posição no Ranking:** `#{posicao_usuario}`"
-        else:
-            resposta = f"📊 **Consulta de Pontuação**\n\n👤 **Membro:** {usuario}\n🏆 **Pontos Atuais:** `0 pts`\n🏅 **Posição no Ranking:** `Não ranqueado`"
+            # Ordena o ranking
+            ranking_ordenado = sorted(
+                ranking.items(),
+                key=lambda item: item[1].get("pontos", 0) if isinstance(item[1], dict) else item[1],
+                reverse=True
+            )
 
-        await interaction.followup.send(resposta, ephemeral=True)
+            pontos_usuario = 0
+            posicao_usuario = None
+            nome_usuario = interaction.user.display_name
+
+            for idx, (uid, dados) in enumerate(ranking_ordenado, start=1):
+                if uid == user_id:
+                    posicao_usuario = idx
+                    if isinstance(dados, dict):
+                        pontos_usuario = dados.get("pontos", 0)
+                    else:
+                        pontos_usuario = dados
+                    break
+
+            if posicao_usuario:
+                resposta = (
+                    f"📊 **Consulta de Pontuação**\n\n"
+                    f"👤 **Membro:** {nome_usuario}\n"
+                    f"🏆 **Pontos Atuais:** `{pontos_usuario} pts`\n"
+                    f"🏅 **Posição no Ranking:** `#{posicao_usuario}`"
+                )
+            else:
+                resposta = (
+                    f"📊 **Consulta de Pontuação**\n\n"
+                    f"👤 **Membro:** {nome_usuario}\n"
+                    f"🏆 **Pontos Atuais:** `0 pts`\n"
+                    f"🏅 **Posição no Ranking:** `Não ranqueado`"
+                )
+
+            await interaction.followup.send(resposta, ephemeral=True)
+
+        except Exception as e:
+            print(f"❌ Erro na consulta de pontos: {e}")
+            await interaction.followup.send(
+                "❌ Ocorreu um erro ao consultar seus pontos. Tente novamente em alguns segundos.",
+                ephemeral=True
+            )
 
 
 class ViewPresenca(discord.ui.View):
@@ -224,43 +267,71 @@ class ViewPresenca(discord.ui.View):
         super().__init__(timeout=900)
         self.nome_boss = nome_boss
         self.pontos = pontos
-        self.participantes = set()
+        self.participantes = set()  # agora guarda user_id
 
     @discord.ui.button(label="✅ Registrar Presença", style=discord.ButtonStyle.green, custom_id="registrar_presenca")
     async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # RESPOSTA IMEDIATA COM DEFER PARA EVITAR O ERRO DE TIMEOUT
+        # Resposta IMEDIATA
         await interaction.response.defer(ephemeral=True)
 
-        usuario = interaction.user.display_name
-        if usuario in self.participantes:
+        user_id = str(interaction.user.id)
+        nome_usuario = interaction.user.display_name
+
+        if user_id in self.participantes:
             await interaction.followup.send("⚠️ Você já registou presença neste boss!", ephemeral=True)
             return
 
-        self.participantes.add(usuario)
+        self.participantes.add(user_id)
 
         async with lock:
             ranking = estado.get("ranking", {})
-            ranking[usuario] = int(ranking.get(usuario, 0)) + self.pontos
+            
+            if user_id in ranking and isinstance(ranking[user_id], dict):
+                ranking[user_id]["pontos"] = ranking[user_id].get("pontos", 0) + self.pontos
+                ranking[user_id]["nome"] = nome_usuario  # atualiza o nome
+            else:
+                # Cria nova entrada ou migra do formato antigo
+                pontos_antigos = ranking.get(user_id, 0) if not isinstance(ranking.get(user_id), dict) else 0
+                ranking[user_id] = {
+                    "pontos": pontos_antigos + self.pontos,
+                    "nome": nome_usuario
+                }
+            
             estado["ranking"] = ranking
             salvar_estado()
 
-        nomes = "\n".join(f"• {p}" for p in sorted(self.participantes)) or "Nenhum participante ainda."
-        if len(nomes) > 1024:
-            nomes = nomes[:1021] + "..."
+        # Monta lista de nomes legíveis
+        nomes = []
+        for uid in sorted(self.participantes):
+            dados = ranking.get(uid, {})
+            if isinstance(dados, dict):
+                nomes.append(f"• {dados.get('nome', uid)}")
+            else:
+                nomes.append(f"• {uid}")
+
+        nomes_texto = "\n".join(nomes) or "Nenhum participante ainda."
+        if len(nomes_texto) > 1024:
+            nomes_texto = nomes_texto[:1021] + "..."
 
         try:
             embed = interaction.message.embeds[0]
             embed.clear_fields()
             embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
-            embed.add_field(name=f"👥 Participantes ({len(self.participantes)})", value=nomes, inline=False)
+            embed.add_field(name=f"👥 Participantes ({len(self.participantes)})", value=nomes_texto, inline=False)
 
             await interaction.message.edit(embed=embed, view=self)
             await atualizar_ranking()
 
-            await interaction.followup.send(f"🎉 Presença registada com sucesso! +{self.pontos} pontos.", ephemeral=True)
+            await interaction.followup.send(
+                f"🎉 Presença registada com sucesso! +{self.pontos} pontos.",
+                ephemeral=True
+            )
         except Exception as erro:
             print(f"⚠️ Erro ao atualizar presença: {erro}")
-            await interaction.followup.send("Pontuação registada, mas houve uma falha ao atualizar o painel visual.", ephemeral=True)
+            await interaction.followup.send(
+                "Pontuação registada, mas houve uma falha ao atualizar o painel visual.",
+                ephemeral=True
+            )
 
 # =========================================================
 # FUNÇÕES DE ATUALIZAÇÃO DE CANAIS
@@ -421,7 +492,7 @@ async def apagar_mensagem_depois(mensagem, segundos):
 # LOOP PRINCIPAL
 # =========================================================
 
-@tasks.loop(seconds=5)
+@tasks.loop(seconds=20)  # ← Aumentado de 5 para 20 segundos (reduz carga e evita timeout)
 async def verificar_boss():
     async with lock:
         agora = datetime.now(TIMEZONE)
@@ -467,7 +538,7 @@ async def on_ready():
     print(f"🕒 Fuso horário: {TIMEZONE}")
     print(f"---------------------------------------")
     
-    # Regista a view persistente do botão "Meus Pontos" para nunca expirar
+    # Regista a view persistente do botão "Meus Pontos"
     bot.add_view(ViewConsultaPontos())
 
     if not verificar_boss.is_running():
