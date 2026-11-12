@@ -34,25 +34,22 @@ CANAL_PONTOS_ID = 1570234809719070842
 CANAL_LOGS_ID = 1570235263853133854
 
 # =====================================================
-# HORÁRIOS DOS EVENTOS
+# HORÁRIOS DOS EVENTOS (ATUALIZADOS)
 # =====================================================
-
+# Formato: (Nome, Horário, Dias da Semana [None = Todos], Pontos, Emoji)
+# Nota: weekday() no Python -> Segunda = 0, Terça = 1, Quarta = 2, Quinta = 3, Sexta = 4, Sábado = 5, Domingo = 6
 eventos = [
-    ("Galia Black", "10:45", None, 2, "🗡️"),
-    ("Kundun", "13:10", None, 2, "🐲"),
-    ("Kundun", "15:10", None, 2, "🐲"),
-    ("Galia Black", "16:45", None, 2, "🗡️"),
     ("Blood Wizard", "18:10", None, 5, "🧙‍♂️"),
     ("Crusher Skeleton", "19:05", None, 5, "💀"),
     ("Necromancer", "19:40", None, 5, "☠️"),
     ("Selupan", "20:10", None, 5, "🦂"),
+    ("Galia Black", "20:30", None, 2, "🗡️"),
     ("Skull Reaper", "20:50", None, 5, "👻"),
-    ("Gywen", "22:10", None, 5, "🐺"),
-    ("HellMaine", "22:30", None, 20, "👿"),
-    ("Balgass", "23:00", [2, 5], 30, "🧌"),
-    ("Yorm", "23:40", None, 15, "🐗"),
+    ("Gwyn, o Senhor das Cinzas", "22:10", None, 5, "🔥"),
+    ("Hellmaine", "22:30", None, 20, "👿"),
+    ("Balgass", "23:00", [2, 5], 30, "🧌"), # Quarta (2) e Sábado (5)
+    ("Yhorm", "23:40", None, 15, "🐗"),
     ("Zorlak", "01:10", None, 15, "🐉"),
-    ("Castle Siege", "21:10", [6], 50, "🛡️"),
 ]
 
 # =====================================================
@@ -232,10 +229,8 @@ class AbrirAbaView(View):
         nome_aba = f"pontos-{usuario.name}".lower()
 
         try:
-            # Verifica se o jogador já tem uma aba ativa neste canal
             aba_existente = discord.utils.get(canal.threads, name=nome_aba)
 
-            # Busca nos tópicos privados arquivados caso não esteja ativa
             if not aba_existente:
                 async for thread in canal.archived_threads(private=True):
                     if thread.name == nome_aba:
@@ -243,7 +238,6 @@ class AbrirAbaView(View):
                         await aba_existente.edit(archived=False)
                         break
 
-            # Se já existir, garante a entrada do jogador e envia o link
             if aba_existente:
                 await aba_existente.add_user(usuario)
                 await interaction.followup.send(
@@ -252,7 +246,6 @@ class AbrirAbaView(View):
                 )
                 return
 
-            # Cria uma nova aba (Tópico Privado) exclusiva
             nova_aba = await canal.create_thread(
                 name=nome_aba,
                 type=discord.ChannelType.private_thread,
@@ -335,12 +328,10 @@ class MaratonaBot(discord.Client):
 
         await init_db(self.pool)
 
-        # Registra todos os botões persistentes
         self.add_view(PresencaView(self))
         self.add_view(MeuPerfilView(self))
         self.add_view(AbrirAbaView(self))
 
-        # Inicia o loop de agendamento
         self.scheduler_loop.start()
 
         logger.info("BOT-TERROR inicializado!")
@@ -367,10 +358,6 @@ class MaratonaBot(discord.Client):
 
         return canal
 
-    # =================================================
-    # LOGS DE AUDITORIA
-    # =================================================
-
     async def log_auditoria(
         self,
         titulo,
@@ -395,10 +382,6 @@ class MaratonaBot(discord.Client):
 
         except discord.DiscordException:
             logger.exception("Erro ao enviar log.")
-
-    # =================================================
-    # ATUALIZAR LISTA
-    # =================================================
 
     async def atualizar_lista_msg(self):
 
@@ -430,10 +413,6 @@ class MaratonaBot(discord.Client):
 
         except discord.DiscordException:
             logger.exception("Erro ao atualizar lista.")
-
-    # =================================================
-    # ABRIR LISTA
-    # =================================================
 
     async def abrir_lista(self, nome, horario, emoji):
 
@@ -479,10 +458,6 @@ class MaratonaBot(discord.Client):
             logger.exception("Erro ao abrir lista.")
             self.limpar_lista()
             return False
-
-    # =================================================
-    # DISTRIBUIR PONTOS
-    # =================================================
 
     async def distribuir_pontos(self, nome, pts):
 
@@ -568,10 +543,6 @@ class MaratonaBot(discord.Client):
         self.lista_ativa = None
         self.mensagem_lista = None
 
-    # =================================================
-    # AGENDAMENTO AUTOMÁTICO
-    # =================================================
-
     @tasks.loop(seconds=15)
     async def scheduler_loop(self):
 
@@ -605,7 +576,6 @@ class MaratonaBot(discord.Client):
 
             chave = f"{hoje}-{indice}"
 
-            # ABERTURA
             if (
                 dt_abrir <= agora < dt_boss
                 and chave not in self.eventos_abertos
@@ -628,7 +598,6 @@ class MaratonaBot(discord.Client):
                         self.lista_ativa
                     )
 
-            # FECHAMENTO
             if (
                 dt_fechar <= agora < dt_fechar + timedelta(minutes=1)
                 and chave not in self.eventos_fechados
@@ -644,10 +613,6 @@ class MaratonaBot(discord.Client):
         await self.wait_until_ready()
 
 
-# =====================================================
-# EXECUÇÃO
-# =====================================================
-
 client = MaratonaBot()
 
 
@@ -660,10 +625,6 @@ async def on_ready():
     )
 
 
-# =====================================================
-# COMANDOS
-# =====================================================
-
 @client.event
 async def on_message(message):
 
@@ -672,13 +633,8 @@ async def on_message(message):
 
     conteudo = message.content.strip()
 
-    # -----------------------------------------------
-    # COMANDOS ADMINISTRATIVOS
-    # -----------------------------------------------
-
     if message.author.guild_permissions.administrator:
 
-        # CRIAR PAINEL DE ABA PRIVADA DO JOGADOR
         if conteudo == "!painel":
             embed = discord.Embed(
                 title=f"🛡️ {BOT_NAME} | CENTRAL DO JOGADOR",
@@ -694,7 +650,6 @@ async def on_message(message):
             except discord.DiscordException:
                 pass
 
-        # ADICIONAR PONTOS
         elif conteudo.startswith("!addpontos"):
 
             try:
@@ -754,7 +709,6 @@ async def on_message(message):
                     "❌ Erro ao adicionar pontos."
                 )
 
-        # ZERAR RANKING
         elif conteudo == "!zerar_ranking":
 
             try:
@@ -780,7 +734,6 @@ async def on_message(message):
                     "❌ Erro ao zerar ranking."
                 )
 
-        # TESTAR BOT
         elif conteudo == "!testar":
 
             if client.lista_ativa is not None:
@@ -809,10 +762,6 @@ async def on_message(message):
                 await message.channel.send(
                     "❌ Não foi possível criar a lista."
                 )
-
-    # -----------------------------------------------
-    # RANKING PARA TODOS
-    # -----------------------------------------------
 
     if conteudo == "!ranking":
 
@@ -872,10 +821,6 @@ async def on_message(message):
                 "❌ Erro ao processar ranking."
             )
 
-
-# =====================================================
-# INICIALIZAÇÃO FINAL
-# =====================================================
 
 if __name__ == "__main__":
 
