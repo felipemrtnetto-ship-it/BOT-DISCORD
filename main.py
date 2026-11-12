@@ -189,4 +189,118 @@ def criar_embed_ranking():
 # ===============================
 
 class ViewPresenca(discord.ui.View):
-    
+    def __init__(self, nome_boss, pontos):
+        super().__init__(timeout=900)
+        self.nome_boss = nome_boss
+        self.pontos = pontos
+        self.participantes = set()
+
+    @discord.ui.button(label="✅ Registrar Presença", style=discord.ButtonStyle.green, custom_id="registrar_presenca")
+    async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        nome_usuario = interaction.user.display_name
+        
+        if nome_usuario in self.participantes:
+            await interaction.response.send_message("⚠️ Você já registou presença neste boss!", ephemeral=True)
+            return
+
+        self.participantes.add(nome_usuario)
+
+        ranking = estado.get("ranking", {})
+        ranking[nome_usuario] = ranking.get(nome_usuario, 0) + self.pontos
+        estado["ranking"] = ranking
+        salvar_estado(estado)
+
+        lista_nomes = "\n".join([f"• {p}" for p in self.participantes])
+        if not lista_nomes:
+            lista_nomes = "Nenhum participante ainda."
+
+        embed = interaction.message.embeds[0]
+        embed.set_field_at(
+            index=2,
+            name=f"👥 Participantes ({len(self.participantes)})",
+            value=lista_nomes,
+            inline=False
+        )
+        
+        await interaction.message.edit(embed=embed, view=self)
+        await interaction.response.send_message(f"🎉 Presença registada com sucesso! +{self.pontos} pontos.", ephemeral=True)
+
+# ===============================
+# COMANDO MANUAL PARA ABRIR LISTA
+# ===============================
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    conteudo = message.content.lower().strip()
+
+    if conteudo.startswith("!abrirlista"):
+        partes = message.content.split(maxsplit=1)
+        if len(partes) < 2:
+            await message.channel.send("⚠️ Uso correto: `!abrirlista crusher`")
+            return
+
+        termo_busca = partes[1].strip().lower()
+        boss_encontrado = None
+
+        # Procura por correspondência parcial ou exata em cada palavra da chave
+        for chave, dados in BOSSES.items():
+            if termo_busca in chave or any(termo in chave for termo in termo_busca.split()):
+                boss_encontrado = dados
+                break
+
+        if not boss_encontrado:
+            await message.channel.send("❌ Boss não encontrado! Verifique o nome.")
+            return
+
+        nome, horario, dias, mapa, coords, emoji, pontos = boss_encontrado
+
+        embed = discord.Embed(
+            title=f"🔥 LISTA ABERTA: {emoji} {nome} 🔥",
+            description=f"⏰ **Horário:** {horario}\n📍 **Mapa:** {mapa} (`{coords}`)\n🏆 **Vale:** {pontos} pontos\n\n*Clique no botão abaixo para registrar a sua presença!*",
+            color=0x2ecc71
+        )
+        embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
+        embed.add_field(name=f"👥 Participantes (0)", value="Nenhum participante ainda.", inline=False)
+
+        view = ViewPresenca(nome, pontos)
+        msg = await message.channel.send(content="@everyone", embed=embed, view=view, allowed_mentions=discord.AllowedMentions(everyone=True))
+        
+        asyncio.create_task(apagar_mensagem_depois(msg, 900))
+
+async def apagar_mensagem_depois(mensagem, segundos):
+    await asyncio.sleep(segundos)
+    try:
+        await mensagem.delete()
+    except Exception:
+        pass
+
+# ===============================
+# VERIFICAÇÃO ANTI-DUPLICIDADE NO CHAT
+# ===============================
+
+async def alerta_ja_postado_recentemente(canal, nome_boss):
+    try:
+        limite_tempo = datetime.now(pytz.utc) - timedelta(minutes=15)
+        async for msg in canal.history(limit=15, after=limite_tempo):
+            if msg.author == bot.user and msg.embeds:
+                titulo = msg.embeds[0].title or ""
+                if nome_boss in titulo:
+                    return True
+    except Exception:
+        pass
+    return False
+
+# ===============================
+# LOOP PRINCIPAL (PAINEL + RANKING GERAL + ALERTAS)
+# ===============================
+
+@tasks.loop(seconds=5)
+async def verificar_boss():
+    async with lock:
+        agora = datetime.now(TIMEZONE)
+
+        # 1. ATUALIZAÇÃO DO PAINEL DE HORÁRIOS
+        canal_painel = bot.get_channel(CANAL_PAINEL_
