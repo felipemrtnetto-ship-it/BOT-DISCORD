@@ -31,8 +31,6 @@ bot = discord.Client(intents=intents)
 
 lock = asyncio.Lock()
 alertas_enviados_memoria = set()
-
-# Guarda ativa da última mensagem de lista enviada para permitir o comando !fechar
 ultima_mensagem_lista = None
 
 # ===============================
@@ -193,7 +191,7 @@ def criar_embed_ranking():
 
 class ViewPresenca(discord.ui.View):
     def __init__(self, nome_boss, pontos):
-        super().__init__(timeout=900)  # Expira em 15 minutos
+        super().__init__(timeout=900)
         self.nome_boss = nome_boss
         self.pontos = pontos
         self.participantes = set()
@@ -220,52 +218,4 @@ class ViewPresenca(discord.ui.View):
             lista_nomes = "Nenhum participante ainda."
 
         embed = interaction.message.embeds[0]
-        embed.clear_fields()
-        embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
-        embed.add_field(name=f"👥 Participantes ({len(self.participantes)})", value=lista_nomes, inline=False)
-        
-        await interaction.message.edit(embed=embed, view=self)
-        await interaction.followup.send(f"🎉 Presença registada com sucesso! +{self.pontos} pontos.", ephemeral=True)
-
-# ===============================
-# COMANDOS DE TEXTO (!abrirlista e !fechar)
-# ===============================
-
-@bot.event
-async def on_message(message):
-    global ultima_mensagem_lista
-    if message.author.bot:
-        return
-
-    conteudo = message.content.lower().strip()
-
-    # Comando para fechar a lista manual ativa
-    if conteudo == "!fechar":
-        if ultima_mensagem_lista:
-            try:
-                await ultima_mensagem_lista.delete()
-                ultima_mensagem_lista = None
-                await message.channel.send("🔒 Lista encerrada com sucesso!")
-            except Exception:
-                await message.channel.send("⚠️ Não foi possível apagar a lista ativa.")
-        else:
-            await message.channel.send("⚠️ Nenhuma lista ativa registada recentemente para fechar.")
-        return
-
-    # Comando para abrir a lista de presença
-    if conteudo.startswith("!abrirlista"):
-        partes = message.content.split(maxsplit=1)
-        if len(partes) < 2:
-            await message.channel.send("⚠️ Uso correto: `!abrirlista crusher`")
-            return
-
-        termo_busca = partes[1].strip().lower()
-        boss_encontrado = None
-
-        for chave, dados in BOSSES.items():
-            if termo_busca in chave or any(termo in chave for termo in termo_busca.split()):
-                boss_encontrado = dados
-                break
-
-        if not boss_encontrado:
-            await
+        embed.
