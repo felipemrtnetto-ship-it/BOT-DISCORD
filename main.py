@@ -17,8 +17,9 @@ TOKEN = os.getenv("TOKEN") or os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise ValueError("❌ TOKEN ou DISCORD_TOKEN não configurado na variável de ambiente.")
 
-CANAL_PAINEL_ID = 1570446068490043442   # Canal do painel fixo
+CANAL_PAINEL_ID = 1570446068490043442   # Canal do painel fixo de horários
 CANAL_ALERTAS_ID = 1570454121922822265  # Canal de alertas (@everyone)
+CANAL_RANKING_ID = 1570446068490043442   # Canal onde o ranking será fixado e atualizado
 
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 ARQUIVO_ESTADO = "estado.json"
@@ -32,7 +33,7 @@ lock = asyncio.Lock()
 alertas_enviados_memoria = set()
 
 # ===============================
-# BOSSES (APENAS OS QUE VALEM PONTOS / ATIVOS)
+# BOSSES E PONTUAÇÕES
 # ===============================
 
 BOSSES = [
@@ -48,22 +49,25 @@ BOSSES = [
 ]
 
 # ===============================
-# ESTADO
+# ESTADO E PERSISTÊNCIA
 # ===============================
 
 def carregar_estado():
     if not os.path.exists(ARQUIVO_ESTADO):
-        return {}
+        return {"ranking": {}, "id_mensagem_painel": None, "id_mensagem_ranking": None}
     try:
         with open(ARQUIVO_ESTADO, "r", encoding="utf-8") as f:
-            return json.load(f)
+            dados = json.load(f)
+            if "ranking" not in dados:
+                dados["ranking"] = {}
+            return dados
     except Exception:
-        return {}
+        return {"ranking": {}, "id_mensagem_painel": None, "id_mensagem_ranking": None}
 
 def salvar_estado(estado):
     try:
         with open(ARQUIVO_ESTADO, "w", encoding="utf-8") as f:
-            json.dump(estado, f)
+            json.dump(estado, f, ensure_ascii=False, indent=4)
     except Exception:
         pass
 
@@ -84,7 +88,7 @@ def formatar_tempo(segundos_totais):
     return f"{horas:02d}:{minutos:02d}:{segundos:02d}"
 
 # ===============================
-# GERAR EMBED COM PONTOS E EMOJIS
+# EMBED DO PAINEL DE HORÁRIOS
 # ===============================
 
 def criar_embed_agenda_detalhada(agora):
@@ -113,10 +117,7 @@ def criar_embed_agenda_detalhada(agora):
         diferenca = (dt_boss - agora).total_seconds()
         tempo_formatado = formatar_tempo(diferenca)
 
-        if diferenca <= 600:
-            status_icone = "🔥"
-        else:
-            status_icone = "⏳"
+        status_icone = "🔥" if diferenca <= 600 else "⏳"
 
         texto_campo = (
             f"📍 **Mapa:** {mapa}\n"
@@ -145,6 +146,62 @@ def criar_embed_agenda_detalhada(agora):
     return embed
 
 # ===============================
+# EMBED DO RANKING GERAL COMPLETO
+# ===============================
+
+def criar_embed_ranking():
+    embed = discord.Embed(
+        title="🏆 RANKING GERAL ATUALIZADO DA GUILDA",
+        description="Placar geral somando todos os pontos acumulados por cada membro.",
+        color=0xf1c40f
+    )
+
+    ranking_atual = estado.get("ranking", {})
+
+    if not ranking_atual:
+        embed.add_field(
+            name="📊 Placar Vazio",
+            value="Ainda não há pontuações registadas.",
+            inline=False
+        )
+    else:
+        # Ordena todos os membros por pontos (do maior para o menor)
+        ranking_ordenado = sorted(ranking_atual.items(), key=lambda item: item[1], reverse=True)
+        
+        texto_ranking = ""
+        for i, (membro, pontos) in enumerate(ranking_ordenado, start=1):
+            if i == 1:
+                medalha = "🥇"
+            elif i == 2:
+                medalha = "🥈"
+            elif i == 3:
+                medalha = "🥉"
+            else:
+                medalha = f"`#{i}`"
+            
+            texto_ranking += f"{medalha} **{membro}** — `{pontos} pts`\n"
+
+        # Como o Discord tem limite de caracteres por campo (1024), dividimos se passar de muitas pessoas
+        if len(texto_ranking) > 1024:
+            # Caso a lista seja gigante, o embed divide de forma segura
+            embed.add_field(name="🏅 Placar Completo", value=texto_ranking[:1024], inline=False)
+        else:
+            embed.add_field(name="🏅 Placar Completo", value=texto_ranking, inline=False)
+
+    embed.set_footer(text="Atualizado em tempo real • Total de membros pontuados: " + str(len(ranking_atual)))
+    return embed
+
+# ===============================
+# FUNÇÃO PARA ADICIONAR PONTOS
+# ===============================
+
+def adicionar_pontos(nome_membro, quantidade):
+    ranking = estado.get("ranking", {})
+    ranking[nome_membro] = ranking.get(nome_membro, 0) + quantidade
+    estado["ranking"] = ranking
+    salvar_estado(estado)
+
+# ===============================
 # VERIFICAÇÃO ANTI-DUPLICIDADE NO CHAT
 # ===============================
 
@@ -161,7 +218,7 @@ async def alerta_ja_postado_recentemente(canal, nome_boss):
     return False
 
 # ===============================
-# LOOP PRINCIPAL (EDITA A MESMA MENSAGEM DO PAINEL)
+# LOOP PRINCIPAL (PAINEL + RANKING GERAL + ALERTAS)
 # ===============================
 
 @tasks.loop(seconds=5)
@@ -169,26 +226,19 @@ async def verificar_boss():
     async with lock:
         agora = datetime.now(TIMEZONE)
 
-        # 1. ATUALIZAÇÃO DO PAINEL DE HORÁRIOS (EDITANDO A MENSAGEM EXISTENTE)
+        # 1. ATUALIZAÇÃO DO PAINEL DE HORÁRIOS (EDITA A MESMA MENSAGEM)
         canal_painel = bot.get_channel(CANAL_PAINEL_ID)
-        if not canal_painel:
-            try:
-                canal_painel = await bot.fetch_channel(CANAL_PAINEL_ID)
-            except discord.DiscordException:
-                canal_painel = None
-
         if canal_painel:
             embed_painel = criar_embed_agenda_detalhada(agora)
-            msg_id = estado.get("id_mensagem_painel")
+            msg_id_painel = estado.get("id_mensagem_painel")
             msg_painel = None
 
-            if msg_id:
+            if msg_id_painel:
                 try:
-                    msg_painel = await canal_painel.fetch_message(msg_id)
-                except (discord.NotFound, discord.HTTPException):
+                    msg_painel = await canal_painel.fetch_message(msg_id_painel)
+                except discord.NotFound:
                     msg_painel = None
 
-            # Se não encontrou a mensagem anterior guardada, procura nas últimas do bot no canal
             if not msg_painel:
                 try:
                     async for m in canal_painel.history(limit=10):
@@ -204,88 +254,24 @@ async def verificar_boss():
                 except discord.HTTPException:
                     pass
             else:
-                # Se realmente não existir nenhuma, cria a primeira
                 nova_msg = await canal_painel.send(embed=embed_painel)
                 estado["id_mensagem_painel"] = nova_msg.id
                 salvar_estado(estado)
 
-        # 2. CANAL DE ALERTAS (SOMENTE 10 MINUTOS ANTES)
-        canal_alertas = bot.get_channel(CANAL_ALERTAS_ID)
-        if not canal_alertas:
-            try:
-                canal_alertas = await bot.fetch_channel(CANAL_ALERTAS_ID)
-            except discord.DiscordException:
-                canal_alertas = None
+        # 1.1 ATUALIZAÇÃO DO RANKING GERAL (EDITA A MESMA MENSAGEM SEM APAGAR)
+        canal_ranking = bot.get_channel(CANAL_RANKING_ID)
+        if canal_ranking:
+            embed_ranking = criar_embed_ranking()
+            msg_id_ranking = estado.get("id_mensagem_ranking")
+            msg_ranking = None
 
-        if canal_alertas:
-            for evento in BOSSES:
-                nome, horario, dias, mapa, coords, emoji, pontos = evento
+            if msg_id_ranking:
+                try:
+                    msg_ranking = await canal_ranking.fetch_message(msg_id_ranking)
+                except discord.NotFound:
+                    msg_ranking = None
 
-                if dias is not None and agora.weekday() not in dias:
-                    continue
-
-                hora_boss = datetime.strptime(horario, "%H:%M")
-                hora_boss = TIMEZONE.localize(
-                    datetime(agora.year, agora.month, agora.day, hora_boss.hour, hora_boss.minute)
-                )
-
-                if hora_boss < agora:
-                    hora_boss += timedelta(days=1)
-
-                diferenca = (hora_boss - agora).total_seconds()
-                data_hoje = agora.strftime('%Y-%m-%d')
-                chave_10 = f"{nome}_{horario}_{data_hoje}_10min"
-
-                if 590 <= diferenca <= 600:
-                    if chave_10 in alertas_enviados_memoria or estado.get(chave_10):
-                        continue
-
-                    if await alerta_ja_postado_recentemente(canal_alertas, nome):
-                        alertas_enviados_memoria.add(chave_10)
-                        estado[chave_10] = True
-                        salvar_estado(estado)
-                        continue
-
-                    alertas_enviados_memoria.add(chave_10)
-                    estado[chave_10] = True
-                    salvar_estado(estado)
-
-                    embed_10 = discord.Embed(
-                        title=f"🔥 BOSS {emoji} {nome} NASCENDO EM 10 MINUTOS! 🔥",
-                        description=f"⏰ **Horário:** {horario}\n📍 **Mapa:** {mapa} (`{coords}`)\n🏆 **Vale:** {pontos} pontos\n\n*Corram para o local!*",
-                        color=0xffa500
-                    )
-                    msg_alerta = await canal_alertas.send(
-                        content="@everyone",
-                        embed=embed_10,
-                        allowed_mentions=discord.AllowedMentions(everyone=True)
-                    )
-                    
-                    asyncio.create_task(apagar_mensagem_depois(msg_alerta, 900))
-
-async def apagar_mensagem_depois(mensagem, segundos):
-    await asyncio.sleep(segundos)
-    try:
-        await mensagem.delete()
-    except discord.NotFound:
-        pass
-    except discord.DiscordException:
-        pass
-
-# ===============================
-# READY
-# ===============================
-
-@bot.event
-async def on_ready():
-    print(f"🛡️ Bot conectado com sucesso como {bot.user}")
-    if not verificar_boss.is_running():
-        verificar_boss.start()
-        print("🚀 Loop de verificação iniciado com sucesso!")
-
-# ===============================
-# EXECUÇÃO
-# ===============================
-
-if __name__ == "__main__":
-    bot.run(TOKEN)
+            if not msg_ranking:
+                try:
+                    async for m in canal_ranking.history(limit=10):
+                        if m.author == bot.user and m.embeds and "RANKING GERAL" in (m.embeds
