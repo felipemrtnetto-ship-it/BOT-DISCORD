@@ -219,7 +219,7 @@ class MaratonaBot(discord.Client):
         self.pontos_lista_ativa = 0
         self.participantes = {}
         self.mensagem_lista = None
-        self.tarefa_auto_fechar = None  # Guarda a tarefa de fechar sozinho em 10 min
+        self.tarefa_auto_fechar = None
 
         self.eventos_abertos = set()
         self.eventos_fechados = set()
@@ -245,6 +245,7 @@ class MaratonaBot(discord.Client):
         self.add_view(ConsultaPontosView(self))
 
         self.scheduler_loop.start()
+        self.limpeza_canal_pontos_loop.start()
 
         logger.info("BOT-TERROR inicializado!")
 
@@ -334,7 +335,6 @@ class MaratonaBot(discord.Client):
             logger.error("Canal de presença indisponível.")
             return False
 
-        # Cancela timer anterior caso exista por segurança
         if self.tarefa_auto_fechar and not self.tarefa_auto_fechar.done():
             self.tarefa_auto_fechar.cancel()
 
@@ -371,7 +371,6 @@ class MaratonaBot(discord.Client):
 
             logger.info("Lista aberta: %s", nome)
 
-            # Agenda o fechamento automático de QUALQUER lista em 10 minutos (600 segundos)
             async def auto_fechar_geral():
                 await asyncio.sleep(600)
                 if self.lista_ativa == nome:
@@ -388,7 +387,6 @@ class MaratonaBot(discord.Client):
 
     async def distribuir_pontos(self, nome, pts):
 
-        # Cancela o timer se fechou antes dos 10 min
         if self.tarefa_auto_fechar and not self.tarefa_auto_fechar.done():
             self.tarefa_auto_fechar.cancel()
 
@@ -408,7 +406,6 @@ class MaratonaBot(discord.Client):
             except (discord.DiscordException, IndexError):
                 logger.exception("Erro ao encerrar lista.")
 
-        # SEGURANÇA: Se for lista de teste, encerra o painel mas NUNCA pontua o ranking
         if nome == "Teste Manual":
             await self.log_auditoria(
                 "Teste Encerrado",
@@ -486,6 +483,36 @@ class MaratonaBot(discord.Client):
         self.mensagem_lista = None
         if self.tarefa_auto_fechar and not self.tarefa_auto_fechar.done():
             self.tarefa_auto_fechar.cancel()
+
+    @tasks.loop(minutes=30)
+    async def limpeza_canal_pontos_loop(self):
+        """Limpa o canal de pontos periodicamente e reposiciona apenas o painel limpo"""
+        try:
+            canal = await self.obter_canal(CANAL_PONTOS_ID)
+            if canal is None:
+                return
+
+            # Purgar mensagens do canal (limpa todo o histórico acumulado)
+            await canal.purge(limit=100)
+
+            # Envia o painel de pontos novinho em folha
+            embed = discord.Embed(
+                title=f"🛡️ {BOT_NAME} | CENTRAL DE CONSULTA DE PONTOS",
+                description=(
+                    "Clique no botão abaixo para verificar sua pontuação e posição atual no ranking instantaneamente!\n\n"
+                    "⭐ **Consulta Direta:** A resposta aparece apenas para você."
+                ),
+                color=0x2ecc71
+            )
+            await canal.send(embed=embed, view=ConsultaPontosView(self))
+            logger.info("Canal de pontos limpo e painel recriado automaticamente.")
+
+        except Exception:
+            logger.exception("Erro ao limpar canal de pontos automaticamente.")
+
+    @limpeza_canal_pontos_loop.before_loop
+    async def antes_limpeza_pontos(self):
+        await self.wait_until_ready()
 
     @tasks.loop(seconds=15)
     async def scheduler_loop(self):
