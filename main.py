@@ -20,7 +20,7 @@ if not TOKEN:
 CANAL_PAINEL_ID = 1570446068490043442
 CANAL_ALERTAS_ID = 1570454121922822265
 CANAL_RANKING_ID = 1570446068490043442
-CANAL_CONSULTA_ID = 1570446068490043442  # Ajuste se o canal de consulta for diferente
+CANAL_CONSULTA_ID = 1570446068490043442
 
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 ARQUIVO_ESTADO = "estado.json"
@@ -28,12 +28,11 @@ ARQUIVO_ESTADO = "estado.json"
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
-intents.members = True  # Necessário para resolver nomes
+intents.members = True
 
 bot = discord.Client(intents=intents)
 
 lock = asyncio.Lock()
-alertas_enviados_memoria = set()
 ultima_mensagem_lista = None
 
 BOSSES = {
@@ -113,7 +112,7 @@ def proxima_data_boss(dados_boss, agora):
     return None
 
 # =========================================================
-# EMBEDS (PAINEL, RANKING E CONSULTA)
+# EMBEDS
 # =========================================================
 
 def criar_embed_agenda_detalhada(agora):
@@ -160,7 +159,6 @@ def criar_embed_ranking():
     if not ranking_atual:
         embed.add_field(name="📊 Placar Vazio", value="Ainda não há pontuações registadas.", inline=False)
     else:
-        # ranking_atual agora usa user_id como chave e guarda {"pontos": x, "nome": "Nome"}
         ranking_ordenado = sorted(
             ranking_atual.items(),
             key=lambda item: item[1].get("pontos", 0) if isinstance(item[1], dict) else item[1],
@@ -172,7 +170,6 @@ def criar_embed_ranking():
                 pontos = dados.get("pontos", 0)
                 nome = dados.get("nome", f"ID:{user_id}")
             else:
-                # Compatibilidade com ranking antigo (apenas pontos)
                 pontos = dados
                 nome = f"ID:{user_id}"
             
@@ -188,8 +185,7 @@ def criar_embed_ranking():
         if bloco_atual:
             embed.add_field(name="🏅 Placar Completo", value=bloco_atual, inline=False)
     
-    total = len(ranking_atual)
-    embed.set_footer(text=f"Atualizado automaticamente • Total de membros: {total}")
+    embed.set_footer(text=f"Atualizado automaticamente • Total de membros: {len(ranking_atual)}")
     return embed
 
 def criar_embed_consulta():
@@ -201,7 +197,7 @@ def criar_embed_consulta():
     return embed
 
 # =========================================================
-# VIEWS INTERATIVAS (BLINDADAS CONTRA TIMEOUT)
+# VIEWS
 # =========================================================
 
 class ViewConsultaPontos(discord.ui.View):
@@ -210,14 +206,13 @@ class ViewConsultaPontos(discord.ui.View):
 
     @discord.ui.button(label="⭐ Meus Pontos", style=discord.ButtonStyle.blurple, custom_id="btn_meus_pontos")
     async def meus_pontos(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Resposta IMEDIATA (obrigatório para evitar timeout)
+        # PRIMEIRA LINHA — resposta imediata
         await interaction.response.defer(ephemeral=True)
 
         try:
             user_id = str(interaction.user.id)
             ranking = estado.get("ranking", {})
 
-            # Ordena o ranking
             ranking_ordenado = sorted(
                 ranking.items(),
                 key=lambda item: item[1].get("pontos", 0) if isinstance(item[1], dict) else item[1],
@@ -253,13 +248,14 @@ class ViewConsultaPontos(discord.ui.View):
                 )
 
             await interaction.followup.send(resposta, ephemeral=True)
+            print(f"✅ Consulta respondida para {nome_usuario}")
 
         except Exception as e:
-            print(f"❌ Erro na consulta de pontos: {e}")
-            await interaction.followup.send(
-                "❌ Ocorreu um erro ao consultar seus pontos. Tente novamente em alguns segundos.",
-                ephemeral=True
-            )
+            print(f"❌ Erro na consulta: {e}")
+            try:
+                await interaction.followup.send("❌ Erro ao consultar pontos. Tente novamente.", ephemeral=True)
+            except:
+                pass
 
 
 class ViewPresenca(discord.ui.View):
@@ -267,11 +263,10 @@ class ViewPresenca(discord.ui.View):
         super().__init__(timeout=900)
         self.nome_boss = nome_boss
         self.pontos = pontos
-        self.participantes = set()  # agora guarda user_id
+        self.participantes = set()
 
     @discord.ui.button(label="✅ Registrar Presença", style=discord.ButtonStyle.green, custom_id="registrar_presenca")
     async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Resposta IMEDIATA
         await interaction.response.defer(ephemeral=True)
 
         user_id = str(interaction.user.id)
@@ -288,9 +283,8 @@ class ViewPresenca(discord.ui.View):
             
             if user_id in ranking and isinstance(ranking[user_id], dict):
                 ranking[user_id]["pontos"] = ranking[user_id].get("pontos", 0) + self.pontos
-                ranking[user_id]["nome"] = nome_usuario  # atualiza o nome
+                ranking[user_id]["nome"] = nome_usuario
             else:
-                # Cria nova entrada ou migra do formato antigo
                 pontos_antigos = ranking.get(user_id, 0) if not isinstance(ranking.get(user_id), dict) else 0
                 ranking[user_id] = {
                     "pontos": pontos_antigos + self.pontos,
@@ -300,7 +294,6 @@ class ViewPresenca(discord.ui.View):
             estado["ranking"] = ranking
             salvar_estado()
 
-        # Monta lista de nomes legíveis
         nomes = []
         for uid in sorted(self.participantes):
             dados = ranking.get(uid, {})
@@ -322,19 +315,13 @@ class ViewPresenca(discord.ui.View):
             await interaction.message.edit(embed=embed, view=self)
             await atualizar_ranking()
 
-            await interaction.followup.send(
-                f"🎉 Presença registada com sucesso! +{self.pontos} pontos.",
-                ephemeral=True
-            )
+            await interaction.followup.send(f"🎉 Presença registada! +{self.pontos} pontos.", ephemeral=True)
         except Exception as erro:
             print(f"⚠️ Erro ao atualizar presença: {erro}")
-            await interaction.followup.send(
-                "Pontuação registada, mas houve uma falha ao atualizar o painel visual.",
-                ephemeral=True
-            )
+            await interaction.followup.send("Pontuação registada, mas falhou ao atualizar o painel.", ephemeral=True)
 
 # =========================================================
-# FUNÇÕES DE ATUALIZAÇÃO DE CANAIS
+# FUNÇÕES DE ATUALIZAÇÃO
 # =========================================================
 
 async def atualizar_ranking():
@@ -372,7 +359,7 @@ async def atualizar_ranking():
     except Exception as erro:
         print(f"⚠️ Erro no ranking: {erro}")
 
-async def garantir_painel_consulta():
+async def garantir_painel_consulta(forcar_novo=False):
     canal = bot.get_channel(CANAL_CONSULTA_ID)
     if not canal:
         try:
@@ -385,31 +372,41 @@ async def garantir_painel_consulta():
     mensagem_id = estado.get("id_mensagem_consulta")
     mensagem = None
 
-    if mensagem_id:
+    if not forcar_novo and mensagem_id:
         try:
             mensagem = await canal.fetch_message(mensagem_id)
         except Exception:
             mensagem = None
 
     try:
-        if mensagem:
+        if mensagem and not forcar_novo:
             await mensagem.edit(embed=embed, view=view)
+            print("✅ Painel de consulta atualizado")
         else:
-            async for msg in canal.history(limit=15):
-                if msg.author == bot.user and msg.embeds and "CENTRAL DE CONSULTA" in (msg.embeds[0].title or ""):
-                    mensagem = msg
-                    break
+            # Apaga mensagem antiga se existir
             if mensagem:
-                await mensagem.edit(embed=embed, view=view)
-            else:
-                mensagem = await canal.send(embed=embed, view=view)
+                try:
+                    await mensagem.delete()
+                except:
+                    pass
+
+            # Procura e apaga qualquer mensagem antiga de consulta
+            async for msg in canal.history(limit=20):
+                if msg.author == bot.user and msg.embeds and "CENTRAL DE CONSULTA" in (msg.embeds[0].title or ""):
+                    try:
+                        await msg.delete()
+                    except:
+                        pass
+
+            mensagem = await canal.send(embed=embed, view=view)
             estado["id_mensagem_consulta"] = mensagem.id
             salvar_estado()
+            print("✅ Nova mensagem de consulta criada")
     except Exception as erro:
         print(f"⚠️ Erro no painel de consulta: {erro}")
 
 # =========================================================
-# COMANDOS DE TEXTO
+# COMANDOS
 # =========================================================
 
 @bot.event
@@ -419,6 +416,13 @@ async def on_message(message):
         return
 
     conteudo = message.content.lower().strip()
+
+    # Comando para forçar recriação do painel de consulta
+    if conteudo == "!atualizarconsulta":
+        await message.channel.send("🔄 Recriando painel de consulta...")
+        await garantir_painel_consulta(forcar_novo=True)
+        await message.channel.send("✅ Painel de consulta recriado!")
+        return
 
     if conteudo == "!fechar":
         if ultima_mensagem_lista:
@@ -492,12 +496,12 @@ async def apagar_mensagem_depois(mensagem, segundos):
 # LOOP PRINCIPAL
 # =========================================================
 
-@tasks.loop(seconds=20)  # ← Aumentado de 5 para 20 segundos (reduz carga e evita timeout)
+@tasks.loop(seconds=25)
 async def verificar_boss():
     async with lock:
         agora = datetime.now(TIMEZONE)
 
-        # 1. Painel de Horários
+        # Painel de Horários
         canal_painel = bot.get_channel(CANAL_PAINEL_ID)
         if canal_painel:
             embed_painel = criar_embed_agenda_detalhada(agora)
@@ -525,21 +529,19 @@ async def verificar_boss():
             except Exception as e:
                 print(f"⚠️ Erro no painel: {e}")
 
-        # 2. Ranking
         await atualizar_ranking()
-
-        # 3. Central de Consulta Fixa
         await garantir_painel_consulta()
 
 @bot.event
 async def on_ready():
-    print(f"---------------------------------------")
-    print(f"✅ Bot conectado com sucesso como: {bot.user}")
-    print(f"🕒 Fuso horário: {TIMEZONE}")
-    print(f"---------------------------------------")
+    print("---------------------------------------")
+    print(f"✅ Bot conectado como: {bot.user}")
+    print(f"🕒 Fuso: {TIMEZONE}")
+    print("---------------------------------------")
     
-    # Regista a view persistente do botão "Meus Pontos"
+    # Registra a view persistente
     bot.add_view(ViewConsultaPontos())
+    print("✅ View de consulta registrada")
 
     if not verificar_boss.is_running():
         verificar_boss.start()
