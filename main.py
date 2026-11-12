@@ -9,7 +9,7 @@ import os
 print("🔄 A iniciar o script do bot...")
 
 # =========================================================
-# CONFIGURAÇÕES
+# CONFIGURAÇÕES DE CANAIS (COLOQUE OS IDs CORRETOS AQUI)
 # =========================================================
 
 TOKEN = os.getenv("TOKEN") or os.getenv("DISCORD_TOKEN")
@@ -17,10 +17,10 @@ TOKEN = os.getenv("TOKEN") or os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise ValueError("❌ TOKEN ou DISCORD_TOKEN não configurado nas variáveis de ambiente do Railway.")
 
-CANAL_PAINEL_ID = 1570446068490043442
-CANAL_ALERTAS_ID = 1570454121922822265
-CANAL_RANKING_ID = 1570446068490043442
-CANAL_CONSULTA_ID = 1570446068490043442
+CANAL_PAINEL_ID = 1570446068490043442   # Canal do painel de horários
+CANAL_ALERTAS_ID = 1570454121922822265  # Canal de alertas e abertura de listas
+CANAL_RANKING_ID = 1570446068490043442   # Substitua pelo ID do canal do Ranking
+CANAL_CONSULTA_ID = 1570446068490043442  # Substitua pelo ID do canal de Consulta de Pontos
 
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 ARQUIVO_ESTADO = "estado.json"
@@ -28,11 +28,11 @@ ARQUIVO_ESTADO = "estado.json"
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
-intents.members = True
 
 bot = discord.Client(intents=intents)
 
 lock = asyncio.Lock()
+alertas_enviados_memoria = set()
 ultima_mensagem_lista = None
 
 BOSSES = {
@@ -159,22 +159,11 @@ def criar_embed_ranking():
     if not ranking_atual:
         embed.add_field(name="📊 Placar Vazio", value="Ainda não há pontuações registadas.", inline=False)
     else:
-        ranking_ordenado = sorted(
-            ranking_atual.items(),
-            key=lambda item: item[1].get("pontos", 0) if isinstance(item[1], dict) else item[1],
-            reverse=True
-        )
+        ranking_ordenado = sorted(ranking_atual.items(), key=lambda item: item[1], reverse=True)
         linhas = []
-        for posicao, (user_id, dados) in enumerate(ranking_ordenado, start=1):
-            if isinstance(dados, dict):
-                pontos = dados.get("pontos", 0)
-                nome = dados.get("nome", f"ID:{user_id}")
-            else:
-                pontos = dados
-                nome = f"ID:{user_id}"
-            
+        for posicao, (membro, pontos) in enumerate(ranking_ordenado, start=1):
             medalha = "🥇" if posicao == 1 else "🥈" if posicao == 2 else "🥉" if posicao == 3 else f"`#{posicao}`"
-            linhas.append(f"{medalha} **{nome}** — `{pontos} pts`")
+            linhas.append(f"{medalha} **{membro}** — `{pontos} pts`")
         
         bloco_atual = ""
         for linha in linhas:
@@ -184,7 +173,6 @@ def criar_embed_ranking():
             bloco_atual += linha + "\n"
         if bloco_atual:
             embed.add_field(name="🏅 Placar Completo", value=bloco_atual, inline=False)
-    
     embed.set_footer(text=f"Atualizado automaticamente • Total de membros: {len(ranking_atual)}")
     return embed
 
@@ -197,7 +185,7 @@ def criar_embed_consulta():
     return embed
 
 # =========================================================
-# VIEWS
+# VIEWS INTERATIVAS
 # =========================================================
 
 class ViewConsultaPontos(discord.ui.View):
@@ -206,56 +194,26 @@ class ViewConsultaPontos(discord.ui.View):
 
     @discord.ui.button(label="⭐ Meus Pontos", style=discord.ButtonStyle.blurple, custom_id="btn_meus_pontos")
     async def meus_pontos(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # PRIMEIRA LINHA — resposta imediata
         await interaction.response.defer(ephemeral=True)
 
-        try:
-            user_id = str(interaction.user.id)
-            ranking = estado.get("ranking", {})
+        usuario = interaction.user.display_name
+        ranking = estado.get("ranking", {})
+        ranking_ordenado = sorted(ranking.items(), key=lambda item: item[1], reverse=True)
+        
+        pontos_usuario = ranking.get(usuario, 0)
+        posicao_usuario = None
+        
+        for idx, (membro, pts) in enumerate(ranking_ordenado, start=1):
+            if membro == usuario:
+                posicao_usuario = idx
+                break
 
-            ranking_ordenado = sorted(
-                ranking.items(),
-                key=lambda item: item[1].get("pontos", 0) if isinstance(item[1], dict) else item[1],
-                reverse=True
-            )
+        if posicao_usuario:
+            resposta = f"📊 **Consulta de Pontuação**\n\n👤 **Membro:** {usuario}\n🏆 **Pontos Atuais:** `{pontos_usuario} pts`\n🏅 **Posição no Ranking:** `#{posicao_usuario}`"
+        else:
+            resposta = f"📊 **Consulta de Pontuação**\n\n👤 **Membro:** {usuario}\n🏆 **Pontos Atuais:** `0 pts`\n🏅 **Posição no Ranking:** `Não ranqueado`"
 
-            pontos_usuario = 0
-            posicao_usuario = None
-            nome_usuario = interaction.user.display_name
-
-            for idx, (uid, dados) in enumerate(ranking_ordenado, start=1):
-                if uid == user_id:
-                    posicao_usuario = idx
-                    if isinstance(dados, dict):
-                        pontos_usuario = dados.get("pontos", 0)
-                    else:
-                        pontos_usuario = dados
-                    break
-
-            if posicao_usuario:
-                resposta = (
-                    f"📊 **Consulta de Pontuação**\n\n"
-                    f"👤 **Membro:** {nome_usuario}\n"
-                    f"🏆 **Pontos Atuais:** `{pontos_usuario} pts`\n"
-                    f"🏅 **Posição no Ranking:** `#{posicao_usuario}`"
-                )
-            else:
-                resposta = (
-                    f"📊 **Consulta de Pontuação**\n\n"
-                    f"👤 **Membro:** {nome_usuario}\n"
-                    f"🏆 **Pontos Atuais:** `0 pts`\n"
-                    f"🏅 **Posição no Ranking:** `Não ranqueado`"
-                )
-
-            await interaction.followup.send(resposta, ephemeral=True)
-            print(f"✅ Consulta respondida para {nome_usuario}")
-
-        except Exception as e:
-            print(f"❌ Erro na consulta: {e}")
-            try:
-                await interaction.followup.send("❌ Erro ao consultar pontos. Tente novamente.", ephemeral=True)
-            except:
-                pass
+        await interaction.followup.send(resposta, ephemeral=True)
 
 
 class ViewPresenca(discord.ui.View):
@@ -269,59 +227,39 @@ class ViewPresenca(discord.ui.View):
     async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
 
-        user_id = str(interaction.user.id)
-        nome_usuario = interaction.user.display_name
-
-        if user_id in self.participantes:
+        usuario = interaction.user.display_name
+        if usuario in self.participantes:
             await interaction.followup.send("⚠️ Você já registou presença neste boss!", ephemeral=True)
             return
 
-        self.participantes.add(user_id)
+        self.participantes.add(usuario)
 
         async with lock:
             ranking = estado.get("ranking", {})
-            
-            if user_id in ranking and isinstance(ranking[user_id], dict):
-                ranking[user_id]["pontos"] = ranking[user_id].get("pontos", 0) + self.pontos
-                ranking[user_id]["nome"] = nome_usuario
-            else:
-                pontos_antigos = ranking.get(user_id, 0) if not isinstance(ranking.get(user_id), dict) else 0
-                ranking[user_id] = {
-                    "pontos": pontos_antigos + self.pontos,
-                    "nome": nome_usuario
-                }
-            
+            ranking[usuario] = int(ranking.get(usuario, 0)) + self.pontos
             estado["ranking"] = ranking
             salvar_estado()
 
-        nomes = []
-        for uid in sorted(self.participantes):
-            dados = ranking.get(uid, {})
-            if isinstance(dados, dict):
-                nomes.append(f"• {dados.get('nome', uid)}")
-            else:
-                nomes.append(f"• {uid}")
-
-        nomes_texto = "\n".join(nomes) or "Nenhum participante ainda."
-        if len(nomes_texto) > 1024:
-            nomes_texto = nomes_texto[:1021] + "..."
+        nomes = "\n".join(f"• {p}" for p in sorted(self.participantes)) or "Nenhum participante ainda."
+        if len(nomes) > 1024:
+            nomes = nomes[:1021] + "..."
 
         try:
             embed = interaction.message.embeds[0]
             embed.clear_fields()
             embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
-            embed.add_field(name=f"👥 Participantes ({len(self.participantes)})", value=nomes_texto, inline=False)
+            embed.add_field(name=f"👥 Participantes ({len(self.participantes)})", value=nomes, inline=False)
 
             await interaction.message.edit(embed=embed, view=self)
             await atualizar_ranking()
 
-            await interaction.followup.send(f"🎉 Presença registada! +{self.pontos} pontos.", ephemeral=True)
+            await interaction.followup.send(f"🎉 Presença registada com sucesso! +{self.pontos} pontos.", ephemeral=True)
         except Exception as erro:
             print(f"⚠️ Erro ao atualizar presença: {erro}")
-            await interaction.followup.send("Pontuação registada, mas falhou ao atualizar o painel.", ephemeral=True)
+            await interaction.followup.send("Pontuação registada, mas houve uma falha ao atualizar o painel visual.", ephemeral=True)
 
 # =========================================================
-# FUNÇÕES DE ATUALIZAÇÃO
+# ATUALIZAÇÃO DE CANAIS
 # =========================================================
 
 async def atualizar_ranking():
@@ -359,7 +297,7 @@ async def atualizar_ranking():
     except Exception as erro:
         print(f"⚠️ Erro no ranking: {erro}")
 
-async def garantir_painel_consulta(forcar_novo=False):
+async def garantir_painel_consulta():
     canal = bot.get_channel(CANAL_CONSULTA_ID)
     if not canal:
         try:
@@ -372,41 +310,31 @@ async def garantir_painel_consulta(forcar_novo=False):
     mensagem_id = estado.get("id_mensagem_consulta")
     mensagem = None
 
-    if not forcar_novo and mensagem_id:
+    if mensagem_id:
         try:
             mensagem = await canal.fetch_message(mensagem_id)
         except Exception:
             mensagem = None
 
     try:
-        if mensagem and not forcar_novo:
+        if mensagem:
             await mensagem.edit(embed=embed, view=view)
-            print("✅ Painel de consulta atualizado")
         else:
-            # Apaga mensagem antiga se existir
-            if mensagem:
-                try:
-                    await mensagem.delete()
-                except:
-                    pass
-
-            # Procura e apaga qualquer mensagem antiga de consulta
-            async for msg in canal.history(limit=20):
+            async for msg in canal.history(limit=15):
                 if msg.author == bot.user and msg.embeds and "CENTRAL DE CONSULTA" in (msg.embeds[0].title or ""):
-                    try:
-                        await msg.delete()
-                    except:
-                        pass
-
-            mensagem = await canal.send(embed=embed, view=view)
+                    mensagem = msg
+                    break
+            if mensagem:
+                await mensagem.edit(embed=embed, view=view)
+            else:
+                mensagem = await canal.send(embed=embed, view=view)
             estado["id_mensagem_consulta"] = mensagem.id
             salvar_estado()
-            print("✅ Nova mensagem de consulta criada")
     except Exception as erro:
         print(f"⚠️ Erro no painel de consulta: {erro}")
 
 # =========================================================
-# COMANDOS
+# COMANDOS DE TEXTO
 # =========================================================
 
 @bot.event
@@ -416,13 +344,6 @@ async def on_message(message):
         return
 
     conteudo = message.content.lower().strip()
-
-    # Comando para forçar recriação do painel de consulta
-    if conteudo == "!atualizarconsulta":
-        await message.channel.send("🔄 Recriando painel de consulta...")
-        await garantir_painel_consulta(forcar_novo=True)
-        await message.channel.send("✅ Painel de consulta recriado!")
-        return
 
     if conteudo == "!fechar":
         if ultima_mensagem_lista:
@@ -484,7 +405,7 @@ async def on_message(message):
 
 async def apagar_mensagem_depois(mensagem, segundos):
     global ultima_mensagem_lista
-    await asyncio.sleep(segundos)
+    asyncio.sleep(segundos)
     try:
         await mensagem.delete()
     except Exception:
@@ -496,12 +417,12 @@ async def apagar_mensagem_depois(mensagem, segundos):
 # LOOP PRINCIPAL
 # =========================================================
 
-@tasks.loop(seconds=25)
+@tasks.loop(seconds=5)
 async def verificar_boss():
     async with lock:
         agora = datetime.now(TIMEZONE)
 
-        # Painel de Horários
+        # 1. Painel de Horários
         canal_painel = bot.get_channel(CANAL_PAINEL_ID)
         if canal_painel:
             embed_painel = criar_embed_agenda_detalhada(agora)
@@ -529,19 +450,20 @@ async def verificar_boss():
             except Exception as e:
                 print(f"⚠️ Erro no painel: {e}")
 
+        # 2. Ranking
         await atualizar_ranking()
+
+        # 3. Central de Consulta Fixa
         await garantir_painel_consulta()
 
 @bot.event
 async def on_ready():
-    print("---------------------------------------")
-    print(f"✅ Bot conectado como: {bot.user}")
-    print(f"🕒 Fuso: {TIMEZONE}")
-    print("---------------------------------------")
+    print(f"---------------------------------------")
+    print(f"✅ Bot conectado com sucesso como: {bot.user}")
+    print(f"🕒 Fuso horário: {TIMEZONE}")
+    print(f"---------------------------------------")
     
-    # Registra a view persistente
     bot.add_view(ViewConsultaPontos())
-    print("✅ View de consulta registrada")
 
     if not verificar_boss.is_running():
         verificar_boss.start()
