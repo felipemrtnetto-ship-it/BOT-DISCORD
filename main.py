@@ -36,17 +36,17 @@ alertas_enviados_memoria = set()
 # BOSSES E PONTUAÇÕES
 # ===============================
 
-BOSSES = [
-    ("Blood Wizard", "18:10", None, "Devias (/pvp2)", "159, 32", "🧙‍♂️", 10),
-    ("Crusher Skeleton", "19:05", None, "Lorencia", "Spawn aleatório", "💀", 15),
-    ("Selupan", "20:10", None, "Raklion (após a ponte, /pvp4)", "174, 2027", "🕷️", 15),
-    ("Galia Black", "20:30", None, "Lost Tower 1 (à esquerda do /move)", "166, 77", "🦇", 15),
-    ("Gwyn, o Senhor das Cinzas", "22:10", None, "Dungeon 3", "25, 72", "🔥", 20),
-    ("Hellmaine", "22:30", None, "Aida (/hellmaine)", "115, 100", "🐺", 25),
-    ("Balgass", "23:00", [2, 5], "Crywolf Fortress", "112, 80 (Somente quartas e sábados)", "👑", 50),
-    ("Yhorm", "23:40", None, "/lorencia1", "22, 46", "🛡️", 20),
-    ("Zorlak", "01:10", None, "Lorencia", "Spawn aleatório", "⚡", 15),
-]
+BOSSES = {
+    "blood wizard": ("Blood Wizard", "18:10", None, "Devias (/pvp2)", "159, 32", "🧙‍♂️", 10),
+    "crusher skeleton": ("Crusher Skeleton", "19:05", None, "Lorencia", "Spawn aleatório", "💀", 15),
+    "selupan": ("Selupan", "20:10", None, "Raklion (após a ponte, /pvp4)", "174, 2027", "🕷️", 15),
+    "galia black": ("Galia Black", "20:30", None, "Lost Tower 1 (à esquerda do /move)", "166, 77", "🦇", 15),
+    "gwyn": ("Gwyn, o Senhor das Cinzas", "22:10", None, "Dungeon 3", "25, 72", "🔥", 20),
+    "hellmaine": ("Hellmaine", "22:30", None, "Aida (/hellmaine)", "115, 100", "🐺", 25),
+    "balgass": ("Balgass", "23:00", [2, 5], "Crywolf Fortress", "112, 80 (Somente quartas e sábados)", "👑", 50),
+    "yhorm": ("Yhorm", "23:40", None, "/lorencia1", "22, 46", "🛡️", 20),
+    "zorlak": ("Zorlak", "01:10", None, "Lorencia", "Spawn aleatório", "⚡", 15),
+}
 
 # ===============================
 # ESTADO E PERSISTÊNCIA
@@ -102,7 +102,8 @@ def criar_embed_agenda_detalhada(agora):
 
     encontrou_algum = False
 
-    for nome, horario, dias, mapa, coords, emoji, pontos in BOSSES:
+    for chave, dados in BOSSES.items():
+        nome, horario, dias, mapa, coords, emoji, pontos = dados
         if dias is not None and weekday_atual not in dias:
             continue
 
@@ -116,7 +117,6 @@ def criar_embed_agenda_detalhada(agora):
 
         diferenca = (dt_boss - agora).total_seconds()
         tempo_formatado = formatar_tempo(diferenca)
-
         status_icone = "🔥" if diferenca <= 600 else "⏳"
 
         texto_campo = (
@@ -127,11 +127,7 @@ def criar_embed_agenda_detalhada(agora):
             f"────────────────────────"
         )
 
-        embed.add_field(
-            name=f"{emoji} {nome}",
-            value=texto_campo,
-            inline=False
-        )
+        embed.add_field(name=f"{emoji} {nome}", value=texto_campo, inline=False)
         encontrou_algum = True
 
     if not encontrou_algum:
@@ -165,7 +161,6 @@ def criar_embed_ranking():
             inline=False
         )
     else:
-        # Ordena todos os membros por pontos (do maior para o menor)
         ranking_ordenado = sorted(ranking_atual.items(), key=lambda item: item[1], reverse=True)
         
         texto_ranking = ""
@@ -181,97 +176,17 @@ def criar_embed_ranking():
             
             texto_ranking += f"{medalha} **{membro}** — `{pontos} pts`\n"
 
-        # Como o Discord tem limite de caracteres por campo (1024), dividimos se passar de muitas pessoas
         if len(texto_ranking) > 1024:
-            # Caso a lista seja gigante, o embed divide de forma segura
-            embed.add_field(name="🏅 Placar Completo", value=texto_ranking[:1024], inline=False)
-        else:
-            embed.add_field(name="🏅 Placar Completo", value=texto_ranking, inline=False)
+            texto_ranking = texto_ranking[:1021] + "..."
+
+        embed.add_field(name="🏅 Placar Completo", value=texto_ranking, inline=False)
 
     embed.set_footer(text="Atualizado em tempo real • Total de membros pontuados: " + str(len(ranking_atual)))
     return embed
 
 # ===============================
-# FUNÇÃO PARA ADICIONAR PONTOS
+# VIEW COM BOTÃO DE PRESENÇA
 # ===============================
 
-def adicionar_pontos(nome_membro, quantidade):
-    ranking = estado.get("ranking", {})
-    ranking[nome_membro] = ranking.get(nome_membro, 0) + quantidade
-    estado["ranking"] = ranking
-    salvar_estado(estado)
-
-# ===============================
-# VERIFICAÇÃO ANTI-DUPLICIDADE NO CHAT
-# ===============================
-
-async def alerta_ja_postado_recentemente(canal, nome_boss):
-    try:
-        limite_tempo = datetime.now(pytz.utc) - timedelta(minutes=15)
-        async for msg in canal.history(limit=15, after=limite_tempo):
-            if msg.author == bot.user and msg.embeds:
-                titulo = msg.embeds[0].title or ""
-                if nome_boss in titulo:
-                    return True
-    except Exception:
-        pass
-    return False
-
-# ===============================
-# LOOP PRINCIPAL (PAINEL + RANKING GERAL + ALERTAS)
-# ===============================
-
-@tasks.loop(seconds=5)
-async def verificar_boss():
-    async with lock:
-        agora = datetime.now(TIMEZONE)
-
-        # 1. ATUALIZAÇÃO DO PAINEL DE HORÁRIOS (EDITA A MESMA MENSAGEM)
-        canal_painel = bot.get_channel(CANAL_PAINEL_ID)
-        if canal_painel:
-            embed_painel = criar_embed_agenda_detalhada(agora)
-            msg_id_painel = estado.get("id_mensagem_painel")
-            msg_painel = None
-
-            if msg_id_painel:
-                try:
-                    msg_painel = await canal_painel.fetch_message(msg_id_painel)
-                except discord.NotFound:
-                    msg_painel = None
-
-            if not msg_painel:
-                try:
-                    async for m in canal_painel.history(limit=10):
-                        if m.author == bot.user and m.embeds and "HORÁRIOS DE BOSSES" in (m.embeds[0].title or ""):
-                            msg_painel = m
-                            break
-                except Exception:
-                    pass
-
-            if msg_painel:
-                try:
-                    await msg_painel.edit(embed=embed_painel)
-                except discord.HTTPException:
-                    pass
-            else:
-                nova_msg = await canal_painel.send(embed=embed_painel)
-                estado["id_mensagem_painel"] = nova_msg.id
-                salvar_estado(estado)
-
-        # 1.1 ATUALIZAÇÃO DO RANKING GERAL (EDITA A MESMA MENSAGEM SEM APAGAR)
-        canal_ranking = bot.get_channel(CANAL_RANKING_ID)
-        if canal_ranking:
-            embed_ranking = criar_embed_ranking()
-            msg_id_ranking = estado.get("id_mensagem_ranking")
-            msg_ranking = None
-
-            if msg_id_ranking:
-                try:
-                    msg_ranking = await canal_ranking.fetch_message(msg_id_ranking)
-                except discord.NotFound:
-                    msg_ranking = None
-
-            if not msg_ranking:
-                try:
-                    async for m in canal_ranking.history(limit=10):
-                        if m.author == bot.user and m.embeds and "RANKING GERAL" in (m.embeds
+class ViewPresenca(discord.ui.View):
+    
