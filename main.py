@@ -9,7 +9,7 @@ import os
 print("🔄 A iniciar o script do bot...")
 
 # ===============================
-# CONFIG
+# CONFIGURAÇÕES
 # ===============================
 
 TOKEN = os.getenv("TOKEN") or os.getenv("DISCORD_TOKEN")
@@ -25,7 +25,7 @@ TIMEZONE = pytz.timezone("America/Sao_Paulo")
 ARQUIVO_ESTADO = "estado.json"
 
 intents = discord.Intents.default()
-intents.message_content = True  # Essencial para ler comandos de texto (!abrirlista)
+intents.message_content = True  # Necessário para ler o comando !abrirlista
 intents.guilds = True
 bot = discord.Client(intents=intents)
 
@@ -185,19 +185,19 @@ def criar_embed_ranking():
     return embed
 
 # ===============================
-# VIEW COM BOTÃO DE PRESENÇA (OTIMIZADA)
+# VIEW COM BOTÃO DE PRESENÇA (BLINDADA CONTRA TIMEOUT)
 # ===============================
 
 class ViewPresenca(discord.ui.View):
     def __init__(self, nome_boss, pontos):
-        super().__init__(timeout=900) # Expira em 15 minutos
+        super().__init__(timeout=900)  # Expira em 15 minutos
         self.nome_boss = nome_boss
         self.pontos = pontos
         self.participantes = set()
 
     @discord.ui.button(label="✅ Registrar Presença", style=discord.ButtonStyle.green, custom_id="registrar_presenca")
     async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Responde imediatamente para evitar o erro "O aplicativo não respondeu a tempo"
+        # A resposta 'defer' evita instantaneamente o erro de "O aplicativo não respondeu a tempo"
         await interaction.response.defer(ephemeral=True)
 
         nome_usuario = interaction.user.display_name
@@ -208,7 +208,7 @@ class ViewPresenca(discord.ui.View):
 
         self.participantes.add(nome_usuario)
 
-        # Atualiza os pontos no estado global
+        # Atualiza o ranking global
         ranking = estado.get("ranking", {})
         ranking[nome_usuario] = ranking.get(nome_usuario, 0) + self.pontos
         estado["ranking"] = ranking
@@ -271,7 +271,7 @@ async def on_message(message):
         view = ViewPresenca(nome, pontos)
         msg = await message.channel.send(content="@everyone", embed=embed, view=view, allowed_mentions=discord.AllowedMentions(everyone=True))
         
-        # Apaga a mensagem da lista após 15 minutos (900 segundos)
+        # Apaga automaticamente após 15 minutos (900 segundos)
         asyncio.create_task(apagar_mensagem_depois(msg, 900))
 
 async def apagar_mensagem_depois(mensagem, segundos):
@@ -381,4 +381,58 @@ async def verificar_boss():
 
                 hora_boss = datetime.strptime(horario, "%H:%M")
                 hora_boss = TIMEZONE.localize(
-                    datetime(agora.year, agora.
+                    datetime(agora.year, agora.month, agora.day, hora_boss.hour, hora_boss.minute)
+                )
+
+                if hora_boss < agora:
+                    hora_boss += timedelta(days=1)
+
+                diferenca = (hora_boss - agora).total_seconds()
+                data_hoje = agora.strftime('%Y-%m-%d')
+                chave_10 = f"{nome}_{horario}_{data_hoje}_10min"
+
+                if 590 <= diferenca <= 600:
+                    if chave_10 in alertas_enviados_memoria or estado.get(chave_10):
+                        continue
+
+                    if await alerta_ja_postado_recentemente(canal_alertas, nome):
+                        alertas_enviados_memoria.add(chave_10)
+                        estado[chave_10] = True
+                        salvar_estado(estado)
+                        continue
+
+                    alertas_enviados_memoria.add(chave_10)
+                    estado[chave_10] = True
+                    salvar_estado(estado)
+
+                    embed_10 = discord.Embed(
+                        title=f"🔥 BOSS {emoji} {nome} NASCENDO EM 10 MINUTOS! 🔥",
+                        description=f"⏰ **Horário:** {horario}\n📍 **Mapa:** {mapa} (`{coords}`)\n🏆 **Vale:** {pontos} pontos\n\n*Corram para o local!*",
+                        color=0xffa500
+                    )
+                    
+                    msg_alerta = await canal_alertas.send(
+                        content="@everyone",
+                        embed=embed_10,
+                        allowed_mentions=discord.AllowedMentions(everyone=True)
+                    )
+                    
+                    asyncio.create_task(apagar_mensagem_depois(msg_alerta, 900))
+
+# ===============================
+# READY
+# ===============================
+
+@bot.event
+async def on_ready():
+    print(f"🛡️ Bot conectado com sucesso como {bot.user}")
+    if not verificar_boss.is_running():
+        verificar_boss.start()
+        print("🚀 Loop de verificação iniciado com sucesso!")
+
+# ===============================
+# EXECUÇÃO
+# ===============================
+
+if __name__ == "__main__":
+    bot.run(TOKEN)
