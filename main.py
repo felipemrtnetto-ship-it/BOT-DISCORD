@@ -216,6 +216,7 @@ class MaratonaBot(discord.Client):
 
         self.pool = None
         self.lista_ativa = None
+        self.pontos_lista_ativa = 0  # Guarda os pontos do evento atual
         self.participantes = {}
         self.mensagem_lista = None
 
@@ -324,7 +325,7 @@ class MaratonaBot(discord.Client):
         except discord.DiscordException:
             logger.exception("Erro ao atualizar lista.")
 
-    async def abrir_lista(self, nome, horario, emoji):
+    async def abrir_lista(self, nome, horario, pts, emoji="🎯"):
 
         canal = await self.obter_canal(CANAL_PRESENCA_ID)
 
@@ -333,12 +334,14 @@ class MaratonaBot(discord.Client):
             return False
 
         self.lista_ativa = nome
+        self.pontos_lista_ativa = pts
         self.participantes = {}
 
         embed = discord.Embed(
             title=f"{emoji} LISTA ABERTA: {nome}",
             description=(
-                f"Evento previsto para **{horario}**.\n"
+                f"Horário/Previsão: **{horario}**\n"
+                f"⭐ **Recompensa:** `{pts} pontos`\n"
                 "Clique no botão abaixo para participar!"
             ),
             color=0x00ff00
@@ -356,7 +359,7 @@ class MaratonaBot(discord.Client):
 
             await self.log_auditoria(
                 "Lista Aberta",
-                f"Evento: **{nome}**",
+                f"Evento: **{nome}** ({pts} pts)",
                 0x00ff00
             )
 
@@ -461,6 +464,7 @@ class MaratonaBot(discord.Client):
 
         self.participantes = {}
         self.lista_ativa = None
+        self.pontos_lista_ativa = 0
         self.mensagem_lista = None
 
     @tasks.loop(seconds=15)
@@ -506,6 +510,7 @@ class MaratonaBot(discord.Client):
                     sucesso = await self.abrir_lista(
                         nome,
                         hora_boss,
+                        pts,
                         emoji
                     )
 
@@ -665,20 +670,70 @@ async def on_message(message):
 
         sucesso = await client.abrir_lista(
             "Teste Manual",
-            "Manual",
+            "Manual (10 min)",
+            5,
             "🧪"
         )
 
         if sucesso:
 
             await message.channel.send(
-                "✅ Lista de teste criada!"
+                "✅ Lista de teste criada! Fechará automaticamente em **10 minutos** (sem pontuar)."
             )
+
+            # Tarefa em segundo plano para fechar o teste sozinho após 10 minutos
+            async def auto_fechar_teste():
+                await asyncio.sleep(600)  # 600 segundos = 10 minutos
+                if client.lista_ativa == "Teste Manual":
+                    await client.distribuir_pontos("Teste Manual", 5)
+
+            asyncio.create_task(auto_fechar_teste())
 
         else:
 
             await message.channel.send(
                 "❌ Não foi possível criar a lista."
+            )
+
+    elif conteudo.startswith("!abrir "):
+
+        if client.lista_ativa is not None:
+
+            await message.channel.send(
+                f"⚠️ Já existe uma lista ativa: "
+                f"**{client.lista_ativa}**."
+            )
+
+            return
+
+        try:
+            partes = conteudo.split()
+            if len(partes) < 3:
+                raise ValueError()
+
+            # Exemplo: !abrir Nightmare 15 (o nome pode ter várias palavras)
+            pts = int(partes[-1])
+            nome_boss = " ".join(partes[1:-1])
+
+            sucesso = await client.abrir_lista(
+                nome_boss,
+                "Manual / Personalizado",
+                pts,
+                "🔥"
+            )
+
+            if sucesso:
+                await message.channel.send(
+                    f"✅ Lista do boss **{nome_boss}** aberta com sucesso valendo **{pts} pontos**!"
+                )
+            else:
+                await message.channel.send(
+                    "❌ Erro ao abrir a lista personalizada."
+                )
+
+        except ValueError:
+            await message.channel.send(
+                "⚠️ Use o formato correto: `!abrir Nome Do Boss 15`"
             )
 
     elif conteudo == "!fechar":
@@ -692,7 +747,8 @@ async def on_message(message):
             return
 
         nome_atual = client.lista_ativa
-        await client.distribuir_pontos(nome_atual, 5)
+        pts_atuais = client.pontos_lista_ativa
+        await client.distribuir_pontos(nome_atual, pts_atuais)
 
         await message.channel.send(
             f"✅ Lista de **{nome_atual}** fechada com sucesso!"
