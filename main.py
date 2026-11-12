@@ -127,10 +127,10 @@ class PresencaView(View):
 
 
 # =====================================================
-# BOTÃO DE CONSULTAR PONTOS
+# BOTÃO DE CONSULTAR PONTOS DIRETO NO CANAL (EPHEMERAL)
 # =====================================================
 
-class MeuPerfilView(View):
+class ConsultaPontosView(View):
 
     def __init__(self, bot):
         super().__init__(timeout=None)
@@ -139,7 +139,7 @@ class MeuPerfilView(View):
     @discord.ui.button(
         label="Meus Pontos",
         style=discord.ButtonStyle.blurple,
-        custom_id="btn_meus_pontos_v1",
+        custom_id="btn_meus_pontos_direto_v1",
         emoji="⭐"
     )
     async def meus_pontos(
@@ -186,6 +186,7 @@ class MeuPerfilView(View):
             )
             embed.set_footer(text=BOT_NAME)
 
+            # Responde diretamente no canal de forma visível apenas para quem clicou
             await interaction.response.send_message(
                 embed=embed,
                 ephemeral=True
@@ -195,93 +196,6 @@ class MeuPerfilView(View):
             logger.exception("Erro ao consultar pontos pelo botão.")
             await interaction.response.send_message(
                 "❌ Ocorreu um erro ao buscar seus pontos. Tente novamente mais tarde.",
-                ephemeral=True
-            )
-
-
-# =====================================================
-# BOTÃO PARA CRIAR ABA PRIVADA DO JOGADOR
-# =====================================================
-
-class AbrirAbaView(View):
-
-    def __init__(self, bot):
-        super().__init__(timeout=None)
-        self.bot = bot
-
-    @discord.ui.button(
-        label="Abrir Minha Aba Privada",
-        style=discord.ButtonStyle.blurple,
-        custom_id="btn_aba_privada_v1",
-        emoji="🔒"
-    )
-    async def abrir_aba(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
-        await interaction.response.defer(ephemeral=True)
-
-        canal = interaction.channel
-        usuario = interaction.user
-        nome_aba = f"pontos-{usuario.name}".lower()
-
-        try:
-            aba_existente = discord.utils.get(canal.threads, name=nome_aba)
-
-            if not aba_existente:
-                async for thread in canal.archived_threads(private=True):
-                    if thread.name == nome_aba:
-                        aba_existente = thread
-                        await aba_existente.edit(archived=False)
-                        break
-
-            if aba_existente:
-                await aba_existente.add_user(usuario)
-                await interaction.followup.send(
-                    f"🔒 Sua aba privada já está aberta! Acesse aqui: {aba_existente.mention}",
-                    ephemeral=True
-                )
-                return
-
-            nova_aba = await canal.create_thread(
-                name=nome_aba,
-                type=discord.ChannelType.private_thread,
-                invitable=False
-            )
-
-            await nova_aba.add_user(usuario)
-
-            embed = discord.Embed(
-                title=f"🔒 Espaço Privado de {usuario.display_name}",
-                description=(
-                    "Bem-vindo à sua aba exclusiva!\n"
-                    "Somente você e os administradores têm acesso a este espaço.\n\n"
-                    "Clique no botão abaixo sempre que quiser puxar seus pontos atualizados:"
-                ),
-                color=0x3498db
-            )
-
-            await nova_aba.send(
-                content=usuario.mention,
-                embed=embed,
-                view=MeuPerfilView(self.bot)
-            )
-
-            await interaction.followup.send(
-                f"✅ Sua aba privada foi criada! Clique para entrar: {nova_aba.mention}",
-                ephemeral=True
-            )
-
-        except discord.Forbidden:
-            await interaction.followup.send(
-                "❌ O bot não tem permissão para criar tópicos privados neste canal. Verifique as permissões do cargo do bot.",
-                ephemeral=True
-            )
-        except Exception:
-            logger.exception("Erro ao criar aba privada.")
-            await interaction.followup.send(
-                "❌ Ocorreu um erro ao abrir sua aba. Tente novamente.",
                 ephemeral=True
             )
 
@@ -327,8 +241,7 @@ class MaratonaBot(discord.Client):
         await init_db(self.pool)
 
         self.add_view(PresencaView(self))
-        self.add_view(MeuPerfilView(self))
-        self.add_view(AbrirAbaView(self))
+        self.add_view(ConsultaPontosView(self))
 
         self.scheduler_loop.start()
 
@@ -633,14 +546,14 @@ async def on_message(message):
 
     if conteudo == "!painel" or conteudo == "!setup_painel":
         embed = discord.Embed(
-            title=f"🛡️ {BOT_NAME} | CENTRAL DO JOGADOR",
+            title=f"🛡️ {BOT_NAME} | CENTRAL DE CONSULTA DE PONTOS",
             description=(
-                "Clique no botão abaixo para abrir a sua **aba privada**.\n\n"
-                "🔒 **Privacidade:** Dentro dela, somente você e a administração podem visualizar suas informações e consultar seus pontos atualizados em tempo real!"
+                "Clique no botão abaixo para verificar sua pontuação e posição atual no ranking instantaneamente!\n\n"
+                "⭐ **Consulta Direta:** A resposta aparece apenas para você."
             ),
             color=0x2ecc71
         )
-        await message.channel.send(embed=embed, view=AbrirAbaView(client))
+        await message.channel.send(embed=embed, view=ConsultaPontosView(client))
         try:
             await message.delete()
         except discord.DiscordException:
