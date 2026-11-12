@@ -631,13 +631,12 @@ async def on_message(message):
 
     conteudo = message.content.strip()
 
-    # TRAVA DE ADMINISTRADOR REMOVIDA TEMPORARIAMENTE PARA TESTES
-    if conteudo == "!painel":
+    if conteudo == "!painel" or conteudo == "!setup_painel":
         embed = discord.Embed(
             title=f"🛡️ {BOT_NAME} | CENTRAL DO JOGADOR",
             description=(
-                "Clique no botão abaixo para abrir a sua **aba privada**.\n"
-                "Dentro dela, somente você e a administração podem visualizar suas informações e consultar seus pontos atualizados em tempo real!"
+                "Clique no botão abaixo para abrir a sua **aba privada**.\n\n"
+                "🔒 **Privacidade:** Dentro dela, somente você e a administração podem visualizar suas informações e consultar seus pontos atualizados em tempo real!"
             ),
             color=0x2ecc71
         )
