@@ -186,7 +186,6 @@ class ConsultaPontosView(View):
             )
             embed.set_footer(text=BOT_NAME)
 
-            # Responde diretamente no canal de forma visível apenas para quem clicou
             await interaction.response.send_message(
                 embed=embed,
                 ephemeral=True
@@ -607,7 +606,7 @@ async def on_message(message):
         except ValueError:
 
             await message.channel.send(
-                "Use: `!addpontos @usuario 10`"
+                "Use: `!addpontos @usuario 10` (ou valor negativo para tirar, ex: `-5`)"
             )
 
         except Exception:
@@ -672,7 +671,51 @@ async def on_message(message):
                 "❌ Não foi possível criar a lista."
             )
 
-    if conteudo == "!ranking":
+    elif conteudo == "!fechar":
+
+        if client.lista_ativa is None:
+
+            await message.channel.send(
+                "❌ Não há nenhuma lista ativa no momento para fechar."
+            )
+
+            return
+
+        nome_atual = client.lista_ativa
+        await client.distribuir_pontos(nome_atual, 5)
+
+        await message.channel.send(
+            f"✅ Lista de **{nome_atual}** fechada e pontuada com sucesso!"
+        )
+
+    elif conteudo == "!fechar_sem_pontos" or conteudo == "!cancelar":
+
+        if client.lista_ativa is None:
+
+            await message.channel.send(
+                "❌ Não há nenhuma lista ativa no momento."
+            )
+
+            return
+
+        nome_atual = client.lista_ativa
+
+        if client.mensagem_lista:
+            try:
+                embed = client.mensagem_lista.embeds[0]
+                embed.title = f"🚫 LISTA CANCELADA: {nome_atual}"
+                embed.color = 0x95a5a6
+                await client.mensagem_lista.edit(embed=embed, view=None)
+            except (discord.DiscordException, IndexError):
+                pass
+
+        client.limpar_lista()
+
+        await message.channel.send(
+            f"✅ A lista de **{nome_atual}** foi encerrada **sem pontuação**."
+        )
+
+    elif conteudo == "!ranking":
 
         try:
 
