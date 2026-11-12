@@ -25,7 +25,7 @@ TIMEZONE = pytz.timezone("America/Sao_Paulo")
 ARQUIVO_ESTADO = "estado.json"
 
 intents = discord.Intents.default()
-intents.message_content = True  # Necessário para ler comandos de texto
+intents.message_content = True  # Essencial para ler comandos de texto
 intents.guilds = True
 bot = discord.Client(intents=intents)
 
@@ -182,3 +182,156 @@ def criar_embed_ranking():
 
         embed.add_field(name="🏅 Placar Completo", value=texto_ranking, inline=False)
 
+    embed.set_footer(text="Atualizado em tempo real • Total de membros pontuados: " + str(len(ranking_atual)))
+    return embed
+
+# ===============================
+# VIEW COM BOTÃO DE PRESENÇA
+# ===============================
+
+class ViewPresenca(discord.ui.View):
+    def __init__(self, nome_boss, pontos):
+        super().__init__(timeout=900)
+        self.nome_boss = nome_boss
+        self.pontos = pontos
+        self.participantes = set()
+
+    @discord.ui.button(label="✅ Registrar Presença", style=discord.ButtonStyle.green, custom_id="registrar_presenca")
+    async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        user = interaction.user.display_name
+        if user in self.participantes:
+            await interaction.followup.send("⚠️ Você já registou presença neste boss!", ephemeral=True)
+            return
+        self.participantes.add(user)
+        ranking = estado.get("ranking", {})
+        ranking[user] = ranking.get(user, 0) + self.pontos
+        estado["ranking"] = ranking
+        salvar_estado(estado)
+        nomes = "\n".join([f"• {p}" for p in self.participantes]) or "Nenhum participante ainda."
+        embed = interaction.message.embeds[0]
+        embed.clear_fields()
+        embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
+        embed.add_field(name=f"👥 Participantes ({len(self.participantes)})", value=nomes, inline=False)
+        await interaction.message.edit(embed=embed, view=self)
+        await interaction.followup.send(f"🎉 Presença registada com sucesso! +{self.pontos} pontos.", ephemeral=True)
+
+# ===============================
+# COMANDOS DE TEXTO (!abrirlista e !fechar)
+# ===============================
+
+@bot.event
+async def on_message(message):
+    global ultima_mensagem_lista
+    if message.author.bot:
+        return
+
+    conteudo = message.content.lower().strip()
+
+    if conteudo == "!fechar":
+        if ultima_mensagem_lista:
+            try:
+                await ultima_mensagem_lista.delete()
+                ultima_mensagem_lista = None
+                await message.channel.send("🔒 Lista encerrada com sucesso!")
+            except Exception:
+                await message.channel.send("⚠️ Não foi possível apagar a lista ativa.")
+        else:
+            await message.channel.send("⚠️ Nenhuma lista ativa registada recentemente para fechar.")
+        return
+
+    if conteudo.startswith("!abrirlista"):
+        partes = message.content.split(maxsplit=1)
+        if len(partes) < 2:
+            await message.channel.send("⚠️ Uso correto: `!abrirlista crusher`")
+            return
+
+        termo_busca = partes[1].strip().lower()
+        boss_encontrado = None
+
+        for chave, dados in BOSSES.items():
+            if termo_busca in chave or any(termo in chave for termo in termo_busca.split()):
+                boss_encontrado = dados
+                break
+
+        if not boss_encontrado:
+            await message.channel.send("❌ Boss não encontrado! Verifique o nome.")
+            return
+
+        nome, horario, dias, mapa, coords, emoji, pontos = boss_encontrado
+
+        embed = discord.Embed(
+            title=f"🔥 LISTA ABERTA: {emoji} {nome} 🔥",
+            description=f"⏰ **Horário:** {horario}\n📍 **Mapa:** {mapa} (`{coords}`)\n🏆 **Vale:** {pontos} pontos\n\n*Clique no botão abaixo para registrar a sua presença!*",
+            color=0x2ecc71
+        )
+        embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
+        embed.add_field(name="👥 Participantes (0)", value="Nenhum participante ainda.", inline=False)
+
+        view = ViewPresenca(nome, pontos)
+        msg = await message.channel.send(content="@everyone", embed=embed, view=view, allowed_mentions=discord.AllowedMentions(everyone=True))
+        
+        ultima_mensagem_lista = msg
+        asyncio.create_task(apagar_mensagem_depois(msg, 900))
+
+async def apagar_mensagem_depois(mensagem, segundos):
+    await asyncio.sleep(segundos)
+    try:
+        await mensagem.delete()
+    except Exception:
+        pass
+
+# ===============================
+# VERIFICAÇÃO ANTI-DUPLICIDADE
+# ===============================
+
+async def alerta_ja_postado_recentemente(canal, nome_boss):
+    try:
+        limite_tempo = datetime.now(pytz.utc) - timedelta(minutes=15)
+        async for msg in canal.history(limit=15, after=limite_tempo):
+            if msg.author == bot.user and msg.embeds:
+                titulo = msg.embeds[0].title or ""
+                if nome_boss in titulo:
+                    return True
+    except Exception:
+        pass
+    return False
+
+# ===============================
+# LOOP PRINCIPAL
+# ===============================
+
+@tasks.loop(seconds=5)
+async def verificar_boss():
+    async with lock:
+        agora = datetime.now(TIMEZONE)
+
+        canal_painel = bot.get_channel(CANAL_PAINEL_ID)
+        if canal_painel:
+            embed_painel = criar_embed_agenda_detalhada(agora)
+            msg_id_painel = estado.get("id_mensagem_painel")
+            msg_painel = None
+
+            if msg_id_painel:
+                try:
+                    msg_painel = await canal_painel.fetch_message(msg_id_painel)
+                except discord.NotFound:
+                    msg_painel = None
+
+            if not msg_painel:
+                try:
+                    async for m in canal_painel.history(limit=10):
+                        if m.author == bot.user and m.embeds and m.embeds[0].title and "HORÁRIOS DE BOSSES" in m.embeds[0].title:
+                            msg_painel = m
+                            break
+                except Exception:
+                    pass
+
+            if msg_painel:
+                try:
+                    await msg_painel.edit(embed=embed_painel)
+                except discord.HTTPException:
+                    pass
+            else:
+                nova_msg = await canal_painel.send(embed=embed_painel)
+                estado["id_mensagem_
