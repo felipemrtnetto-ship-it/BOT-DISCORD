@@ -1,4 +1,3 @@
-
 import os
 import asyncio
 import logging
@@ -85,7 +84,7 @@ async def init_db(pool):
 
 
 # =====================================================
-# BOTÃO DE PRESENÇA
+# BOTÃO DE PRESENÇA NOS EVENTOS
 # =====================================================
 
 class PresencaView(View):
@@ -133,6 +132,170 @@ class PresencaView(View):
 
 
 # =====================================================
+# BOTÃO DE CONSULTAR PONTOS (DENTRO DA ABA PRIVADA)
+# =====================================================
+
+class MeuPerfilView(View):
+
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @discord.ui.button(
+        label="Meus Pontos",
+        style=discord.ButtonStyle.blurple,
+        custom_id="btn_meus_pontos_v1",
+        emoji="⭐"
+    )
+    async def meus_pontos(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        user_id = interaction.user.id
+
+        try:
+            async with self.bot.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT nick, pontos FROM ranking WHERE user_id = $1",
+                    user_id
+                )
+
+                if not row:
+                    await interaction.response.send_message(
+                        "📭 Você ainda não possui pontos registrados no ranking.",
+                        ephemeral=True
+                    )
+                    return
+
+                posicao = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) + 1 
+                    FROM ranking 
+                    WHERE pontos > (SELECT pontos FROM ranking WHERE user_id = $1)
+                    """,
+                    user_id
+                )
+
+            pontos = row["pontos"]
+            nick = row["nick"]
+
+            embed = discord.Embed(
+                title=f"📊 Status Atualizado de {nick}",
+                description=(
+                    f"🏆 **Posição no Ranking:** `{posicao}º lugar`\n"
+                    f"⭐ **Pontos Acumulados:** `{pontos} pts`"
+                ),
+                color=0x3498db,
+                timestamp=datetime.now(TIMEZONE)
+            )
+            embed.set_footer(text=BOT_NAME)
+
+            await interaction.response.send_message(
+                embed=embed,
+                ephemeral=True
+            )
+
+        except Exception:
+            logger.exception("Erro ao consultar pontos pelo botão.")
+            await interaction.response.send_message(
+                "❌ Ocorreu um erro ao buscar seus pontos. Tente novamente mais tarde.",
+                ephemeral=True
+            )
+
+
+# =====================================================
+# BOTÃO PARA CRIAR ABA PRIVADA DO JOGADOR
+# =====================================================
+
+class AbrirAbaView(View):
+
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @discord.ui.button(
+        label="Abrir Minha Aba Privada",
+        style=discord.ButtonStyle.blurple,
+        custom_id="btn_aba_privada_v1",
+        emoji="🔒"
+    )
+    async def abrir_aba(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        canal = interaction.channel
+        usuario = interaction.user
+        nome_aba = f"pontos-{usuario.name}".lower()
+
+        try:
+            # Verifica se o jogador já tem uma aba ativa neste canal
+            aba_existente = discord.utils.get(canal.threads, name=nome_aba)
+
+            # Busca nos tópicos privados arquivados caso não esteja ativa
+            if not aba_existente:
+                async for thread in canal.archived_threads(private=True):
+                    if thread.name == nome_aba:
+                        aba_existente = thread
+                        await aba_existente.edit(archived=False)
+                        break
+
+            # Se já existir, garante a entrada do jogador e envia o link
+            if aba_existente:
+                await aba_existente.add_user(usuario)
+                await interaction.followup.send(
+                    f"🔒 Sua aba privada já está aberta! Acesse aqui: {aba_existente.mention}",
+                    ephemeral=True
+                )
+                return
+
+            # Cria uma nova aba (Tópico Privado) exclusiva
+            nova_aba = await canal.create_thread(
+                name=nome_aba,
+                type=discord.ChannelType.private_thread,
+                invitable=False
+            )
+
+            await nova_aba.add_user(usuario)
+
+            embed = discord.Embed(
+                title=f"🔒 Espaço Privado de {usuario.display_name}",
+                description=(
+                    "Bem-vindo à sua aba exclusiva!\n"
+                    "Somente você e os administradores têm acesso a este espaço.\n\n"
+                    "Clique no botão abaixo sempre que quiser puxar seus pontos atualizados:"
+                ),
+                color=0x3498db
+            )
+
+            await nova_aba.send(
+                content=usuario.mention,
+                embed=embed,
+                view=MeuPerfilView(self.bot)
+            )
+
+            await interaction.followup.send(
+                f"✅ Sua aba privada foi criada! Clique para entrar: {nova_aba.mention}",
+                ephemeral=True
+            )
+
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ O bot não tem permissão para criar tópicos privados neste canal. Verifique as permissões do cargo do bot.",
+                ephemeral=True
+            )
+        except Exception:
+            logger.exception("Erro ao criar aba privada.")
+            await interaction.followup.send(
+                "❌ Ocorreu um erro ao abrir sua aba. Tente novamente.",
+                ephemeral=True
+            )
+
+
+# =====================================================
 # CLIENTE BOT-TERROR
 # =====================================================
 
@@ -172,9 +335,13 @@ class MaratonaBot(discord.Client):
 
         await init_db(self.pool)
 
+        # Registra todos os botões persistentes
         self.add_view(PresencaView(self))
+        self.add_view(MeuPerfilView(self))
+        self.add_view(AbrirAbaView(self))
 
-        self.scheduler.start()
+        # Inicia o loop de agendamento
+        self.scheduler_loop.start()
 
         logger.info("BOT-TERROR inicializado!")
 
@@ -406,7 +573,7 @@ class MaratonaBot(discord.Client):
     # =================================================
 
     @tasks.loop(seconds=15)
-    async def scheduler(self):
+    async def scheduler_loop(self):
 
         agora = datetime.now(TIMEZONE)
         hoje = agora.date()
@@ -472,7 +639,7 @@ class MaratonaBot(discord.Client):
 
                 self.eventos_fechados.add(chave)
 
-    @scheduler.before_loop
+    @scheduler_loop.before_loop
     async def antes_scheduler(self):
         await self.wait_until_ready()
 
@@ -511,8 +678,24 @@ async def on_message(message):
 
     if message.author.guild_permissions.administrator:
 
+        # CRIAR PAINEL DE ABA PRIVADA DO JOGADOR
+        if conteudo == "!painel":
+            embed = discord.Embed(
+                title=f"🛡️ {BOT_NAME} | CENTRAL DO JOGADOR",
+                description=(
+                    "Clique no botão abaixo para abrir a sua **aba privada**.\n"
+                    "Dentro dela, somente você e a administração podem visualizar suas informações e consultar seus pontos atualizados em tempo real!"
+                ),
+                color=0x2ecc71
+            )
+            await message.channel.send(embed=embed, view=AbrirAbaView(client))
+            try:
+                await message.delete()
+            except discord.DiscordException:
+                pass
+
         # ADICIONAR PONTOS
-        if conteudo.startswith("!addpontos"):
+        elif conteudo.startswith("!addpontos"):
 
             try:
 
