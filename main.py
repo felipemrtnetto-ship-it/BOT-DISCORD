@@ -25,7 +25,7 @@ TIMEZONE = pytz.timezone("America/Sao_Paulo")
 ARQUIVO_ESTADO = "estado.json"
 
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = True  # Essencial para ler comandos de texto
 intents.guilds = True
 bot = discord.Client(intents=intents)
 
@@ -245,7 +245,6 @@ async def on_message(message):
         termo_busca = partes[1].strip().lower()
         boss_encontrado = None
 
-        # Procura por correspondência parcial ou exata em cada palavra da chave
         for chave, dados in BOSSES.items():
             if termo_busca in chave or any(termo in chave for termo in termo_busca.split()):
                 boss_encontrado = dados
@@ -303,4 +302,132 @@ async def verificar_boss():
         agora = datetime.now(TIMEZONE)
 
         # 1. ATUALIZAÇÃO DO PAINEL DE HORÁRIOS
-        canal_painel = bot.get_channel(CANAL_PAINEL_
+        canal_painel = bot.get_channel(CANAL_PAINEL_ID)
+        if canal_painel:
+            embed_painel = criar_embed_agenda_detalhada(agora)
+            msg_id_painel = estado.get("id_mensagem_painel")
+            msg_painel = None
+
+            if msg_id_painel:
+                try:
+                    msg_painel = await canal_painel.fetch_message(msg_id_painel)
+                except discord.NotFound:
+                    msg_painel = None
+
+            if not msg_painel:
+                try:
+                    async for m in canal_painel.history(limit=10):
+                        if m.author == bot.user and m.embeds and m.embeds[0].title and "HORÁRIOS DE BOSSES" in m.embeds[0].title:
+                            msg_painel = m
+                            break
+                except Exception:
+                    pass
+
+            if msg_painel:
+                try:
+                    await msg_painel.edit(embed=embed_painel)
+                except discord.HTTPException:
+                    pass
+            else:
+                nova_msg = await canal_painel.send(embed=embed_painel)
+                estado["id_mensagem_painel"] = nova_msg.id
+                salvar_estado(estado)
+
+        # 1.1 ATUALIZAÇÃO DO RANKING GERAL
+        canal_ranking = bot.get_channel(CANAL_RANKING_ID)
+        if canal_ranking:
+            embed_ranking = criar_embed_ranking()
+            msg_id_ranking = estado.get("id_mensagem_ranking")
+            msg_ranking = None
+
+            if msg_id_ranking:
+                try:
+                    msg_ranking = await canal_ranking.fetch_message(msg_id_ranking)
+                except discord.NotFound:
+                    msg_ranking = None
+
+            if not msg_ranking:
+                try:
+                    async for m in canal_ranking.history(limit=10):
+                        if m.author == bot.user and m.embeds and m.embeds[0].title and "RANKING GERAL" in m.embeds[0].title:
+                            msg_ranking = m
+                            break
+                except Exception:
+                    pass
+
+            if msg_ranking:
+                try:
+                    await msg_ranking.edit(embed=embed_ranking)
+                except discord.HTTPException:
+                    pass
+            else:
+                nova_msg_rank = await canal_ranking.send(embed=embed_ranking)
+                estado["id_mensagem_ranking"] = nova_msg_rank.id
+                salvar_estado(estado)
+
+        # 2. CANAL DE ALERTAS (10 MINUTOS ANTES)
+        canal_alertas = bot.get_channel(CANAL_ALERTAS_ID)
+        if canal_alertas:
+            for chave, dados in BOSSES.items():
+                nome, horario, dias, mapa, coords, emoji, pontos = dados
+
+                if dias is not None and agora.weekday() not in dias:
+                    continue
+
+                hora_boss = datetime.strptime(horario, "%H:%M")
+                hora_boss = TIMEZONE.localize(
+                    datetime(agora.year, agora.month, agora.day, hora_boss.hour, hora_boss.minute)
+                )
+
+                if hora_boss < agora:
+                    hora_boss += timedelta(days=1)
+
+                diferenca = (hora_boss - agora).total_seconds()
+                data_hoje = agora.strftime('%Y-%m-%d')
+                chave_10 = f"{nome}_{horario}_{data_hoje}_10min"
+
+                if 590 <= diferenca <= 600:
+                    if chave_10 in alertas_enviados_memoria or estado.get(chave_10):
+                        continue
+
+                    if await alerta_ja_postado_recentemente(canal_alertas, nome):
+                        alertas_enviados_memoria.add(chave_10)
+                        estado[chave_10] = True
+                        salvar_estado(estado)
+                        continue
+
+                    alertas_enviados_memoria.add(chave_10)
+                    estado[chave_10] = True
+                    salvar_estado(estado)
+
+                    embed_10 = discord.Embed(
+                        title=f"🔥 BOSS {emoji} {nome} NASCENDO EM 10 MINUTOS! 🔥",
+                        description=f"⏰ **Horário:** {horario}\n📍 **Mapa:** {mapa} (`{coords}`)\n🏆 **Vale:** {pontos} pontos\n\n*Corram para o local!*",
+                        color=0xffa500
+                    )
+                    
+                    msg_alerta = await canal_alertas.send(
+                        content="@everyone",
+                        embed=embed_10,
+                        allowed_mentions=discord.AllowedMentions(everyone=True)
+                    )
+                    
+                    asyncio.create_task(apagar_mensagem_depois(msg_alerta, 900))
+
+# ===============================
+# READY
+# ===============================
+
+@bot.event
+async def on_ready():
+    print(f"🛡️ Bot conectado com sucesso como {bot.user}")
+    if not verificar_boss.is_running():
+        verificar_boss.start()
+        print("🚀 Loop de verificação iniciado com sucesso!")
+
+# ===============================
+# EXECUÇÃO
+# ===============================
+
+if __name__ == "__main__":
+    bot.run(TOKEN)
