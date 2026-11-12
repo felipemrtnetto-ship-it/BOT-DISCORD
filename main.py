@@ -25,12 +25,15 @@ TIMEZONE = pytz.timezone("America/Sao_Paulo")
 ARQUIVO_ESTADO = "estado.json"
 
 intents = discord.Intents.default()
-intents.message_content = True  # Necessário para ler o comando !abrirlista
+intents.message_content = True  # Necessário para ler comandos de texto
 intents.guilds = True
 bot = discord.Client(intents=intents)
 
 lock = asyncio.Lock()
 alertas_enviados_memoria = set()
+
+# Guarda ativa da última mensagem de lista enviada para permitir o comando !fechar
+ultima_mensagem_lista = None
 
 # ===============================
 # BOSSES E PONTUAÇÕES
@@ -197,7 +200,6 @@ class ViewPresenca(discord.ui.View):
 
     @discord.ui.button(label="✅ Registrar Presença", style=discord.ButtonStyle.green, custom_id="registrar_presenca")
     async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Evita o erro de timeout do Discord instantaneamente
         await interaction.response.defer(ephemeral=True)
 
         nome_usuario = interaction.user.display_name
@@ -208,7 +210,6 @@ class ViewPresenca(discord.ui.View):
 
         self.participantes.add(nome_usuario)
 
-        # Atualiza os pontos no ranking global
         ranking = estado.get("ranking", {})
         ranking[nome_usuario] = ranking.get(nome_usuario, 0) + self.pontos
         estado["ranking"] = ranking
@@ -218,7 +219,6 @@ class ViewPresenca(discord.ui.View):
         if not lista_nomes:
             lista_nomes = "Nenhum participante ainda."
 
-        # Atualiza o embed de forma segura sem erros de índice
         embed = interaction.message.embeds[0]
         embed.clear_fields()
         embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
@@ -228,16 +228,31 @@ class ViewPresenca(discord.ui.View):
         await interaction.followup.send(f"🎉 Presença registada com sucesso! +{self.pontos} pontos.", ephemeral=True)
 
 # ===============================
-# COMANDO MANUAL PARA ABRIR LISTA
+# COMANDOS DE TEXTO (!abrirlista e !fechar)
 # ===============================
 
 @bot.event
 async def on_message(message):
+    global ultima_mensagem_lista
     if message.author.bot:
         return
 
     conteudo = message.content.lower().strip()
 
+    # Comando para fechar a lista manual ativa
+    if conteudo == "!fechar":
+        if ultima_mensagem_lista:
+            try:
+                await ultima_mensagem_lista.delete()
+                ultima_mensagem_lista = None
+                await message.channel.send("🔒 Lista encerrada com sucesso!")
+            except Exception:
+                await message.channel.send("⚠️ Não foi possível apagar a lista ativa.")
+        else:
+            await message.channel.send("⚠️ Nenhuma lista ativa registada recentemente para fechar.")
+        return
+
+    # Comando para abrir a lista de presença
     if conteudo.startswith("!abrirlista"):
         partes = message.content.split(maxsplit=1)
         if len(partes) < 2:
@@ -253,7 +268,4 @@ async def on_message(message):
                 break
 
         if not boss_encontrado:
-            await message.channel.send("❌ Boss não encontrado! Verifique o nome.")
-            return
-
-        nome, horario
+            await
