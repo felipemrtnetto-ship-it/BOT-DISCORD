@@ -185,7 +185,7 @@ def criar_embed_ranking():
     return embed
 
 # ===============================
-# VIEW COM BOTÃO DE PRESENÇA CORRIGIDA
+# VIEW COM BOTÃO DE PRESENÇA
 # ===============================
 
 class ViewPresenca(discord.ui.View):
@@ -256,7 +256,4 @@ async def on_message(message):
             await message.channel.send("❌ Boss não encontrado! Verifique o nome.")
             return
 
-        nome, horario, dias, mapa, coords, emoji, pontos = boss_encontrado
-
-        embed = discord.Embed(
-            title=f"🔥 LIST
+        nome, horario
