@@ -1,34 +1,43 @@
+
 import os
-import discord
-from discord.ui import Button, View
 import asyncio
-import asyncpg
+import logging
 from datetime import datetime, timedelta
+
+import discord
+import asyncpg
 import pytz
+from discord.ext import tasks
+from discord.ui import View
 from dotenv import load_dotenv
 
-# ==============================
-# ⚙️ CONFIGURAÇÕES E AMBIENTE
-# ==============================
+# =====================================================
+# BOT-TERROR - CONFIGURAÇÕES
+# =====================================================
+
 load_dotenv()
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    DATABASE_URL = DATABASE_URL.replace(
+        "postgres://", "postgresql://", 1
+    )
 
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 
+BOT_NAME = "BOT-TERROR"
 
-# ==============================
-# 📢 IDs DOS CANAIS DO DISCORD
-# ==============================
+# IDs DOS CANAIS
 CANAL_PRESENCA_ID = 1561134289595142235
 CANAL_PONTOS_ID = 1570234809719070842
 CANAL_LOGS_ID = 1570235263853133854
 
+# =====================================================
+# HORÁRIOS DOS EVENTOS
+# =====================================================
 
-# Tabela de Horários
 eventos = [
     ("Galia Black", "10:45", None, 2, "🗡️"),
     ("Kundun", "13:10", None, 2, "🐲"),
@@ -47,215 +56,650 @@ eventos = [
     ("Castle Siege", "21:10", [6], 50, "🛡️"),
 ]
 
-# ==============================
-# 🗄️ BANCO DE DADOS
-# ==============================
-async def init_db():
-    try:
-        conn = await asyncpg.connect(DATABASE_URL)
-        await conn.execute('''
+# =====================================================
+# LOGS
+# =====================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+logger = logging.getLogger(BOT_NAME)
+
+# =====================================================
+# BANCO DE DADOS
+# =====================================================
+
+async def init_db(pool):
+    async with pool.acquire() as conn:
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS ranking (
                 user_id BIGINT PRIMARY KEY,
-                nick TEXT,
+                nick TEXT NOT NULL,
                 pontos INTEGER DEFAULT 0
             )
-        ''')
-        await conn.close()
-        print("✅ Banco de Dados conectado!")
-    except Exception as e:
-        print(f"❌ Erro no Banco: {e}")
+        """)
 
-# ==============================
-# 🔘 INTERFACE (BOTÃO)
-# ==============================
+    logger.info("Banco de dados conectado!")
+
+
+# =====================================================
+# BOTÃO DE PRESENÇA
+# =====================================================
+
 class PresencaView(View):
+
     def __init__(self, bot):
         super().__init__(timeout=None)
         self.bot = bot
 
-    @discord.ui.button(label="Marcar Presença", style=discord.ButtonStyle.green, custom_id="btn_pres_v3", emoji="✅")
-    async def marcar_presenca(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(
+        label="Marcar Presença",
+        style=discord.ButtonStyle.green,
+        custom_id="btn_pres_v3",
+        emoji="✅"
+    )
+    async def marcar_presenca(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
         if not self.bot.lista_ativa:
-            return await interaction.response.send_message("❌ Nenhuma lista aberta!", ephemeral=True)
-        
+            await interaction.response.send_message(
+                "❌ Nenhuma lista aberta!",
+                ephemeral=True
+            )
+            return
+
         if interaction.user.id in self.bot.participantes:
-            return await interaction.response.send_message("⚠️ Você já está na lista!", ephemeral=True)
+            await interaction.response.send_message(
+                "⚠️ Você já está na lista!",
+                ephemeral=True
+            )
+            return
 
-        self.bot.participantes[interaction.user.id] = interaction.user.display_name
+        self.bot.participantes[interaction.user.id] = (
+            interaction.user.display_name
+        )
+
         await self.bot.atualizar_lista_msg()
-        await interaction.response.send_message(f"✅ Confirmado!", ephemeral=True)
 
-# ==============================
-# 🤖 CLASSE DO BOT
-# ==============================
+        await interaction.response.send_message(
+            "✅ Presença confirmada!",
+            ephemeral=True
+        )
+
+
+# =====================================================
+# CLIENTE BOT-TERROR
+# =====================================================
+
+intents = discord.Intents.default()
+intents.guilds = True
+intents.members = True
+intents.message_content = True
+
+
 class MaratonaBot(discord.Client):
+
     def __init__(self):
-        super().__init__(intents=discord.Intents.all())
+        super().__init__(intents=intents)
+
+        self.pool = None
         self.lista_ativa = None
         self.participantes = {}
         self.mensagem_lista = None
 
+        self.eventos_abertos = set()
+        self.eventos_fechados = set()
+        self.data_controle = None
+
     async def setup_hook(self):
-        await init_db()
+
+        if not TOKEN:
+            raise RuntimeError("DISCORD_TOKEN não configurado!")
+
+        if not DATABASE_URL:
+            raise RuntimeError("DATABASE_URL não configurado!")
+
+        self.pool = await asyncpg.create_pool(
+            DATABASE_URL,
+            min_size=1,
+            max_size=5
+        )
+
+        await init_db(self.pool)
+
         self.add_view(PresencaView(self))
-        self.loop.create_task(self.scheduler())
 
-    async def log_auditoria(self, titulo, desc, cor=0x3498db):
-        canal = self.get_channel(CANAL_LOGS_ID)
-        if canal:
+        self.scheduler.start()
+
+        logger.info("BOT-TERROR inicializado!")
+
+    async def close(self):
+
+        if self.pool:
+            await self.pool.close()
+
+        await super().close()
+
+    async def obter_canal(self, canal_id):
+
+        canal = self.get_channel(canal_id)
+
+        if canal is None:
             try:
-                embed = discord.Embed(title=titulo, description=desc, color=cor, timestamp=datetime.now(TIMEZONE))
-                await canal.send(embed=embed)
-            except Exception as e:
-                print(f"Erro ao enviar log: {e}")
+                canal = await self.fetch_channel(canal_id)
+            except discord.DiscordException:
+                logger.exception(
+                    "Não foi possível acessar o canal %s",
+                    canal_id
+                )
 
-    async def atualizar_lista_msg(self):
-        if self.mensagem_lista:
-            txt = "\n".join([f"• {n}" for n in self.participantes.values()])
-            embed = discord.Embed(
-                title=f"📋 LISTA: {self.lista_ativa}",
-                description=f"**Participantes ({len(self.participantes)}):**\n{txt}",
-                color=0x2ecc71
-            )
-            try:
-                await self.mensagem_lista.edit(embed=embed, view=PresencaView(self))
-            except:
-                pass
+        return canal
 
-    async def distribuir_pontos(self, nome, pts):
-        if self.mensagem_lista:
-            try:
-                embed_fechado = self.mensagem_lista.embeds[0]
-                embed_fechado.title = f"❌ LISTA ENCERRADA: {nome}"
-                embed_fechado.color = 0xe74c3c
-                await self.mensagem_lista.edit(embed=embed_fechado, view=None)
-            except Exception as e:
-                print(f"Erro ao remover botões: {e}")
+    # =================================================
+    # LOGS DE AUDITORIA
+    # =================================================
 
-        if not self.participantes:
-            await self.log_auditoria("⚠️ Lista Vazia", f"Evento **{nome}** sem participantes.", 0xe67e22)
-            self.lista_ativa = None
-            self.mensagem_lista = None
+    async def log_auditoria(
+        self,
+        titulo,
+        descricao,
+        cor=0x3498db
+    ):
+
+        canal = await self.obter_canal(CANAL_LOGS_ID)
+
+        if canal is None:
             return
 
         try:
-            conn = await asyncpg.connect(DATABASE_URL)
-            for uid, nick in self.participantes.items():
-                await conn.execute('''
-                    INSERT INTO ranking (user_id, nick, pontos) VALUES ($1, $2, $3)
-                    ON CONFLICT (user_id) DO UPDATE SET pontos = ranking.pontos + $3, nick = $2
-                ''', uid, nick, pts)
-            await conn.close()
-            
-            await self.log_auditoria("💰 Pontos Pagos", f"Evento: {nome}\nParticipantes: {len(self.participantes)}", 0x27ae60)
-            
-            canal_pts = self.get_channel(CANAL_PONTOS_ID)
-            if canal_pts:
-                await canal_pts.send(f"✅ **{nome}** finalizado! **{len(self.participantes)}** jogadores ganharam **{pts}** pts.")
-        except Exception as e:
-            print(f"Erro ao pagar: {e}")
-        finally:
-            self.participantes = {}
-            self.lista_ativa = None
-            self.mensagem_lista = None
+            embed = discord.Embed(
+                title=f"🤖 {BOT_NAME} | {titulo}",
+                description=descricao,
+                color=cor,
+                timestamp=datetime.now(TIMEZONE)
+            )
 
-    async def scheduler(self):
-        await self.wait_until_ready()
-        print("⏰ Scheduler Ativo.")
-        while not self.is_closed():
+            await canal.send(embed=embed)
+
+        except discord.DiscordException:
+            logger.exception("Erro ao enviar log.")
+
+    # =================================================
+    # ATUALIZAR LISTA
+    # =================================================
+
+    async def atualizar_lista_msg(self):
+
+        if self.mensagem_lista is None:
+            return
+
+        participantes = "\n".join(
+            f"• {discord.utils.escape_markdown(nick)}"
+            for nick in self.participantes.values()
+        )
+
+        if not participantes:
+            participantes = "Aguardando participantes..."
+
+        embed = discord.Embed(
+            title=f"📋 LISTA: {self.lista_ativa}",
+            description=(
+                f"**Participantes ({len(self.participantes)}):**\n"
+                f"{participantes}"
+            ),
+            color=0x2ecc71
+        )
+
+        try:
+            await self.mensagem_lista.edit(
+                embed=embed,
+                view=PresencaView(self)
+            )
+
+        except discord.DiscordException:
+            logger.exception("Erro ao atualizar lista.")
+
+    # =================================================
+    # ABRIR LISTA
+    # =================================================
+
+    async def abrir_lista(self, nome, horario, emoji):
+
+        canal = await self.obter_canal(CANAL_PRESENCA_ID)
+
+        if canal is None:
+            logger.error("Canal de presença indisponível.")
+            return False
+
+        self.lista_ativa = nome
+        self.participantes = {}
+
+        embed = discord.Embed(
+            title=f"{emoji} LISTA ABERTA: {nome}",
+            description=(
+                f"Evento previsto para **{horario}**.\n"
+                "Clique no botão abaixo para participar!"
+            ),
+            color=0x00ff00
+        )
+
+        try:
+            self.mensagem_lista = await canal.send(
+                content="@everyone",
+                embed=embed,
+                view=PresencaView(self),
+                allowed_mentions=discord.AllowedMentions(
+                    everyone=True
+                )
+            )
+
+            await self.log_auditoria(
+                "Lista Aberta",
+                f"Evento: **{nome}**",
+                0x00ff00
+            )
+
+            logger.info("Lista aberta: %s", nome)
+
+            return True
+
+        except discord.DiscordException:
+            logger.exception("Erro ao abrir lista.")
+            self.limpar_lista()
+            return False
+
+    # =================================================
+    # DISTRIBUIR PONTOS
+    # =================================================
+
+    async def distribuir_pontos(self, nome, pts):
+
+        if self.mensagem_lista:
+
             try:
-                now = datetime.now(TIMEZONE)
-                hora_atual = now.strftime("%H:%M")
-                canal_pres = self.get_channel(CANAL_PRESENCA_ID)
+                embed = self.mensagem_lista.embeds[0]
 
-                for nome, h_boss, dias, pts, emoji in eventos:
-                    if dias and now.weekday() not in dias: continue
-                    
-                    h, m = map(int, h_boss.split(":"))
-                    dt_boss = now.replace(hour=h, minute=m, second=0, microsecond=0)
-                    t_abrir = (dt_boss - timedelta(minutes=5)).strftime("%H:%M")
-                    t_fechar = (dt_boss + timedelta(minutes=10)).strftime("%H:%M")
+                embed.title = f"❌ LISTA ENCERRADA: {nome}"
+                embed.color = 0xe74c3c
 
-                    if hora_atual == t_abrir and self.lista_ativa != nome:
-                        self.lista_ativa = nome
-                        self.participantes = {}
-                        emb = discord.Embed(title=f"{emoji} LISTA ABERTA: {nome}", color=0x00FF00)
-                        emb.description = "Clique no botão abaixo para participar!"
-                        self.mensagem_lista = await canal_pres.send(content="@everyone", embed=emb, view=PresencaView(self))
-                        await self.log_auditoria("🔔 Lista Aberta", f"Evento: {nome}", 0x00FF00)
+                await self.mensagem_lista.edit(
+                    embed=embed,
+                    view=None
+                )
 
-                    if hora_atual == t_fechar and self.lista_ativa == nome:
-                        await self.distribuir_pontos(nome, pts)
-            except Exception as e:
-                print(f"Erro loop: {e}")
-            await asyncio.sleep(30)
+            except (discord.DiscordException, IndexError):
+                logger.exception("Erro ao encerrar lista.")
 
-# ==============================
-# 🎮 EXECUÇÃO E COMANDOS
-# ==============================
+        if not self.participantes:
+
+            await self.log_auditoria(
+                "Lista Vazia",
+                f"Evento **{nome}** sem participantes.",
+                0xe67e22
+            )
+
+            self.limpar_lista()
+            return
+
+        quantidade = len(self.participantes)
+
+        try:
+
+            async with self.pool.acquire() as conn:
+
+                async with conn.transaction():
+
+                    for uid, nick in self.participantes.items():
+
+                        await conn.execute(
+                            """
+                            INSERT INTO ranking
+                                (user_id, nick, pontos)
+                            VALUES ($1, $2, $3)
+
+                            ON CONFLICT (user_id)
+                            DO UPDATE SET
+                                pontos = ranking.pontos + EXCLUDED.pontos,
+                                nick = EXCLUDED.nick
+                            """,
+                            uid,
+                            nick,
+                            pts
+                        )
+
+            await self.log_auditoria(
+                "Pontos Pagos",
+                f"Evento: {nome}\n"
+                f"Participantes: {quantidade}\n"
+                f"Pontos: {pts}",
+                0x27ae60
+            )
+
+            canal = await self.obter_canal(CANAL_PONTOS_ID)
+
+            if canal:
+                await canal.send(
+                    f"✅ **{nome}** finalizado! "
+                    f"**{quantidade}** jogadores ganharam "
+                    f"**{pts}** pts."
+                )
+
+        except Exception:
+            logger.exception("Erro ao distribuir pontos.")
+
+        finally:
+            self.limpar_lista()
+
+    def limpar_lista(self):
+
+        self.participantes = {}
+        self.lista_ativa = None
+        self.mensagem_lista = None
+
+    # =================================================
+    # AGENDAMENTO AUTOMÁTICO
+    # =================================================
+
+    @tasks.loop(seconds=15)
+    async def scheduler(self):
+
+        agora = datetime.now(TIMEZONE)
+        hoje = agora.date()
+
+        if self.data_controle != hoje:
+
+            self.data_controle = hoje
+            self.eventos_abertos.clear()
+            self.eventos_fechados.clear()
+
+        for indice, evento in enumerate(eventos):
+
+            nome, hora_boss, dias, pts, emoji = evento
+
+            if dias is not None and agora.weekday() not in dias:
+                continue
+
+            hora, minuto = map(int, hora_boss.split(":"))
+
+            dt_boss = agora.replace(
+                hour=hora,
+                minute=minuto,
+                second=0,
+                microsecond=0
+            )
+
+            dt_abrir = dt_boss - timedelta(minutes=5)
+            dt_fechar = dt_boss + timedelta(minutes=10)
+
+            chave = f"{hoje}-{indice}"
+
+            # ABERTURA
+            if (
+                dt_abrir <= agora < dt_boss
+                and chave not in self.eventos_abertos
+            ):
+
+                if self.lista_ativa is None:
+
+                    sucesso = await self.abrir_lista(
+                        nome,
+                        hora_boss,
+                        emoji
+                    )
+
+                    if sucesso:
+                        self.eventos_abertos.add(chave)
+
+                else:
+                    logger.warning(
+                        "Já existe lista ativa: %s",
+                        self.lista_ativa
+                    )
+
+            # FECHAMENTO
+            if (
+                dt_fechar <= agora < dt_fechar + timedelta(minutes=1)
+                and chave not in self.eventos_fechados
+            ):
+
+                if self.lista_ativa == nome:
+                    await self.distribuir_pontos(nome, pts)
+
+                self.eventos_fechados.add(chave)
+
+    @scheduler.before_loop
+    async def antes_scheduler(self):
+        await self.wait_until_ready()
+
+
+# =====================================================
+# EXECUÇÃO
+# =====================================================
+
 client = MaratonaBot()
+
 
 @client.event
 async def on_ready():
-    print(f"🚀 {client.user} ONLINE!")
+
+    logger.info(
+        "🚀 BOT-TERROR ONLINE! Conectado como %s",
+        client.user
+    )
+
+
+# =====================================================
+# COMANDOS
+# =====================================================
 
 @client.event
 async def on_message(message):
-    if message.author.bot: return
+
+    if message.author.bot or message.guild is None:
+        return
+
+    conteudo = message.content.strip()
+
+    # -----------------------------------------------
+    # COMANDOS ADMINISTRATIVOS
+    # -----------------------------------------------
 
     if message.author.guild_permissions.administrator:
-        if message.content.startswith("!addpontos"):
+
+        # ADICIONAR PONTOS
+        if conteudo.startswith("!addpontos"):
+
             try:
-                parts = message.content.split()
-                user = message.mentions[0]
-                qtd = int(parts[2])
-                conn = await asyncpg.connect(DATABASE_URL)
-                await conn.execute('INSERT INTO ranking (user_id, nick, pontos) VALUES ($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET pontos=ranking.pontos+$3', user.id, user.display_name, qtd)
-                await conn.close()
-                await message.channel.send(f"✅ Adicionado {qtd} pts para {user.mention}!")
-                await client.log_auditoria("✍️ Ponto Manual", f"ADM {message.author} deu {qtd} pts para {user.display_name}")
-            except:
-                await message.channel.send("Use: `!addpontos @usuario 10`")
 
-        if message.content == "!zerar_ranking":
-            conn = await asyncpg.connect(DATABASE_URL)
-            await conn.execute("DELETE FROM ranking")
-            await conn.close()
-            await message.channel.send("⚠️ **RANKING RESETADO!**")
-            await client.log_auditoria("🗑️ Reset", f"O ranking foi zerado por {message.author}", 0xff0000)
+                if not message.mentions:
+                    raise ValueError()
 
-        if message.content == "!testar":
-            canal = client.get_channel(CANAL_PRESENCA_ID)
-            client.lista_ativa = "Teste Manual"
-            client.participantes = {}
-            emb = discord.Embed(title="🧪 TESTE", description="Clique no botão!", color=0x00FFFF)
-            client.mensagem_lista = await canal.send(embed=emb, view=PresencaView(client))
+                partes = conteudo.split()
 
-    # --- COMANDO RANKING ATUALIZADO PARA TODOS OS PLAYERS ---
-    if message.content == "!ranking":
+                if len(partes) < 3:
+                    raise ValueError()
+
+                usuario = message.mentions[0]
+                qtd = int(partes[2])
+
+                async with client.pool.acquire() as conn:
+
+                    await conn.execute(
+                        """
+                        INSERT INTO ranking
+                            (user_id, nick, pontos)
+                        VALUES ($1, $2, $3)
+
+                        ON CONFLICT (user_id)
+                        DO UPDATE SET
+                            pontos = ranking.pontos + EXCLUDED.pontos,
+                            nick = EXCLUDED.nick
+                        """,
+                        usuario.id,
+                        usuario.display_name,
+                        qtd
+                    )
+
+                await message.channel.send(
+                    f"✅ Adicionado **{qtd}** pts para "
+                    f"{usuario.mention}!"
+                )
+
+                await client.log_auditoria(
+                    "Ponto Manual",
+                    f"ADM: {message.author}\n"
+                    f"Jogador: {usuario.display_name}\n"
+                    f"Pontos: {qtd}"
+                )
+
+            except ValueError:
+
+                await message.channel.send(
+                    "Use: `!addpontos @usuario 10`"
+                )
+
+            except Exception:
+
+                logger.exception("Erro em !addpontos.")
+
+                await message.channel.send(
+                    "❌ Erro ao adicionar pontos."
+                )
+
+        # ZERAR RANKING
+        elif conteudo == "!zerar_ranking":
+
+            try:
+
+                async with client.pool.acquire() as conn:
+                    await conn.execute("DELETE FROM ranking")
+
+                await message.channel.send(
+                    "⚠️ **RANKING RESETADO!**"
+                )
+
+                await client.log_auditoria(
+                    "Ranking Resetado",
+                    f"Ranking zerado por {message.author}.",
+                    0xff0000
+                )
+
+            except Exception:
+
+                logger.exception("Erro ao zerar ranking.")
+
+                await message.channel.send(
+                    "❌ Erro ao zerar ranking."
+                )
+
+        # TESTAR BOT
+        elif conteudo == "!testar":
+
+            if client.lista_ativa is not None:
+
+                await message.channel.send(
+                    f"⚠️ Já existe uma lista ativa: "
+                    f"**{client.lista_ativa}**."
+                )
+
+                return
+
+            sucesso = await client.abrir_lista(
+                "Teste Manual",
+                "Manual",
+                "🧪"
+            )
+
+            if sucesso:
+
+                await message.channel.send(
+                    "✅ Lista de teste criada!"
+                )
+
+            else:
+
+                await message.channel.send(
+                    "❌ Não foi possível criar a lista."
+                )
+
+    # -----------------------------------------------
+    # RANKING PARA TODOS
+    # -----------------------------------------------
+
+    if conteudo == "!ranking":
+
         try:
-            conn = await asyncpg.connect(DATABASE_URL)
-            # Removido o LIMIT 20 para pegar todos
-            rows = await conn.fetch("SELECT nick, pontos FROM ranking ORDER BY pontos DESC")
-            await conn.close()
+
+            async with client.pool.acquire() as conn:
+
+                rows = await conn.fetch(
+                    """
+                    SELECT nick, pontos
+                    FROM ranking
+                    ORDER BY pontos DESC, nick ASC
+                    """
+                )
 
             if not rows:
-                return await message.channel.send("📭 O ranking está vazio.")
 
-            # Montagem do ranking com suporte a muitas mensagens (evita erro de 2000 caracteres)
-            linhas = [f"**{i+1}º** {r['nick']} — `{r['pontos']} pts`" for i, r in enumerate(rows)]
-            
-            # Divide as linhas em grupos de 25 para não estourar o limite do Embed
-            chunks = [linhas[i:i + 25] for i in range(0, len(linhas), 25)]
+                await message.channel.send(
+                    "📭 O ranking está vazio."
+                )
 
-            for index, chunk in enumerate(chunks):
-                titulo = "🏆 RANKING COMPLETO" if index == 0 else f"🏆 RANKING (CONT. {index+1})"
-                emb = discord.Embed(title=titulo, color=0xFFD700)
-                emb.description = "\n".join(chunk)
-                await message.channel.send(embed=emb)
-                
-        except Exception as e:
-            print(f"Erro no ranking: {e}")
-            await message.channel.send("❌ Erro ao processar o ranking.")
+                return
 
-client.run(TOKEN)
+            linhas = [
+                f"**{i + 1}º** "
+                f"{discord.utils.escape_markdown(row['nick'])} "
+                f"— `{row['pontos']} pts`"
+                for i, row in enumerate(rows)
+            ]
+
+            blocos = [
+                linhas[i:i + 25]
+                for i in range(0, len(linhas), 25)
+            ]
+
+            for indice, bloco in enumerate(blocos):
+
+                titulo = (
+                    f"🏆 {BOT_NAME} | RANKING COMPLETO"
+                    if indice == 0
+                    else f"🏆 RANKING (CONT. {indice + 1})"
+                )
+
+                embed = discord.Embed(
+                    title=titulo,
+                    description="\n".join(bloco),
+                    color=0xffd700
+                )
+
+                await message.channel.send(embed=embed)
+
+        except Exception:
+
+            logger.exception("Erro ao consultar ranking.")
+
+            await message.channel.send(
+                "❌ Erro ao processar ranking."
+            )
+
+
+# =====================================================
+# INICIALIZAÇÃO FINAL
+# =====================================================
+
+if __name__ == "__main__":
+
+    if not TOKEN:
+        raise RuntimeError("DISCORD_TOKEN não configurado!")
+
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL não configurado!")
+
+    client.run(TOKEN, log_handler=None)
