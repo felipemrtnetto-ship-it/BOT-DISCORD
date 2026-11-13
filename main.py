@@ -7,7 +7,7 @@ import json
 import os
 import time
 
-print("🔄 A iniciar o bot com arranque seguro...")
+print("🔄 A iniciar o bot definitivo (ID do Discord + Anti-Rate Limit)...")
 
 # =========================================================
 # CONFIGURAÇÕES DE CANAIS EXATOS
@@ -30,6 +30,7 @@ ARQUIVO_ESTADO = "/data/estado.json"
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
+intents.members = True
 
 class MeuBot(discord.Client):
     def __init__(self, *args, **kwargs):
@@ -37,7 +38,6 @@ class MeuBot(discord.Client):
         self.lock = asyncio.Lock()
 
     async def setup_hook(self):
-        # Regista a View persistente para os botões continuarem a funcionar após restarts
         self.add_view(ViewConsultaPontos())
         if not verificar_boss.is_running():
             verificar_boss.start()
@@ -48,6 +48,7 @@ class MeuBot(discord.Client):
         print(f"✅ Bot conectado com sucesso como: {self.user}")
         print(f"🕒 Fuso horário: {TIMEZONE}")
         print(f"---------------------------------------")
+        await migrar_ranking_para_ids(self)
 
 bot = MeuBot(intents=intents)
 
@@ -55,6 +56,7 @@ alertas_10min_memoria = set()
 listas_5min_memoria = set()
 ultima_mensagem_lista = None
 tempo_inicio_bot = time.time()
+ultimo_hash_ranking = ""
 
 BOSSES = {
     "blood wizard": ("Blood Wizard", "18:10", None, "Devias (/pvp2)", "159, 32", "🧙‍♂️", 10),
@@ -112,6 +114,34 @@ def salvar_estado(dados=None):
 
 estado = carregar_estado()
 
+async def migrar_ranking_para_ids(client):
+    ranking = estado.get("ranking", {})
+    novo_ranking = {}
+    alterado = False
+
+    for chave, pontos in ranking.items():
+        if chave.isdigit():
+            novo_ranking[chave] = pontos
+            continue
+
+        encontrou = False
+        for guild in client.guilds:
+            membro = discord.utils.find(lambda m: m.display_name.lower() == chave.lower() or m.name.lower() == chave.lower(), guild.members)
+            if membro:
+                novo_ranking[str(membro.id)] = pontos
+                encontrou = True
+                alterado = True
+                print(f"🔄 Migrado com sucesso: '{chave}' -> ID {membro.id} ({membro.display_name})")
+                break
+        
+        if not encontrou:
+            novo_ranking[chave] = pontos
+
+    if alterado:
+        estado["ranking"] = novo_ranking
+        salvar_estado()
+        print("✅ Migração de ranking concluída e salva com sucesso!")
+
 # =========================================================
 # DATAS E TEMPO
 # =========================================================
@@ -135,6 +165,20 @@ def proxima_data_boss(dados_boss, agora):
         if horario_boss >= agora:
             return horario_boss
     return None
+
+async def obter_nome_membro_async(client, user_id_str):
+    if user_id_str.isdigit():
+        for guild in client.guilds:
+            membro = guild.get_member(int(user_id_str))
+            if membro:
+                return membro.display_name
+            try:
+                membro = await guild.fetch_member(int(user_id_str))
+                if membro:
+                    return membro.display_name
+            except Exception:
+                continue
+    return user_id_str
 
 # =========================================================
 # EMBEDS
@@ -186,7 +230,7 @@ def criar_embed_agenda_detalhada(agora):
     embed.add_field(name="\u200b", value="━━━━━━━━━━━━━━━━━━━━\n*Fique atento aos horários e prepare-se para disputar os bosses!*", inline=False)
     return embed
 
-def criar_embed_ranking():
+async def criar_embed_ranking_async(client):
     agora_str = datetime.now(TIMEZONE).strftime('%H:%M:%S')
     embed = discord.Embed(
         title="🏆 RANKING GERAL ATUALIZADO DA GUILDA",
@@ -199,7 +243,9 @@ def criar_embed_ranking():
     else:
         ranking_ordenado = sorted(ranking_atual.items(), key=lambda item: item[1], reverse=True)
         linhas = []
-        for posicao, (membro, pontos) in enumerate(ranking_ordenado, start=1):
+        for posicao, (user_id_str, pontos) in enumerate(ranking_ordenado, start=1):
+            nome_exibicao = await obter_nome_membro_async(client, user_id_str)
+
             if posicao == 1:
                 medalha = "🥇"
             elif posicao == 2:
@@ -209,7 +255,7 @@ def criar_embed_ranking():
             else:
                 medalha = f"`#{posicao}`"
             
-            linhas.append(f"{medalha} **{membro}** — `{pontos} pts`")
+            linhas.append(f"{medalha} **{nome_exibicao}** — `{pontos} pts`")
         
         bloco_atual = ""
         for linha in linhas:
@@ -243,15 +289,16 @@ class ViewConsultaPontos(discord.ui.View):
     async def meus_pontos(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
 
+        user_id_str = str(interaction.user.id)
         usuario = interaction.user.display_name
         ranking = estado.get("ranking", {})
-        ranking_ordenado = sorted(ranking.items(), key=lambda item: item[1], reverse=True)
         
-        pontos_usuario = ranking.get(usuario, 0)
+        pontos_usuario = ranking.get(user_id_str, ranking.get(usuario, 0))
+        ranking_ordenado = sorted(ranking.items(), key=lambda item: item[1], reverse=True)
         posicao_usuario = None
         
-        for idx, (membro, pts) in enumerate(ranking_ordenado, start=1):
-            if membro == usuario:
+        for idx, (uid_ou_nome, pts) in enumerate(ranking_ordenado, start=1):
+            if uid_ou_nome == user_id_str or uid_ou_nome.lower() == usuario.lower():
                 posicao_usuario = idx
                 break
 
@@ -277,27 +324,32 @@ class ViewPresenca(discord.ui.View):
         super().__init__(timeout=900)
         self.nome_boss = nome_boss
         self.pontos = pontos
-        self.participantes = set()
+        self.participantes_ids = set()
 
     @discord.ui.button(label="✅ Registrar Presença", style=discord.ButtonStyle.green, custom_id="registrar_presenca")
     async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
 
-        usuario = interaction.user.display_name
-        if usuario in self.participantes:
+        user_id_str = str(interaction.user.id)
+        if user_id_str in self.participantes_ids:
             msg = await interaction.followup.send("⚠️ Você já registou presença neste boss!", ephemeral=True)
             asyncio.create_task(apagar_msg_temporaria(msg))
             return
 
-        self.participantes.add(usuario)
+        self.participantes_ids.add(user_id_str)
 
         async with bot.lock:
             ranking = estado.get("ranking", {})
-            ranking[usuario] = int(ranking.get(usuario, 0)) + self.pontos
+            ranking[user_id_str] = int(ranking.get(user_id_str, 0)) + self.pontos
             estado["ranking"] = ranking
             salvar_estado()
 
-        nomes = "\n".join(f"• {p}" for p in sorted(self.participantes)) or "Nenhum participante ainda."
+        nomes_participantes = []
+        for uid in sorted(self.participantes_ids):
+            nome = await obter_nome_membro_async(interaction.client, uid)
+            nomes_participantes.append(f"• {nome}")
+        
+        nomes = "\n".join(nomes_participantes) or "Nenhum participante ainda."
         if len(nomes) > 1024:
             nomes = nomes[:1021] + "..."
 
@@ -305,10 +357,10 @@ class ViewPresenca(discord.ui.View):
             embed = interaction.message.embeds[0]
             embed.clear_fields()
             embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
-            embed.add_field(name=f"👥 Participantes ({len(self.participantes)})", value=nomes, inline=False)
+            embed.add_field(name=f"👥 Participantes ({len(self.participantes_ids)})", value=nomes, inline=False)
 
             await interaction.message.edit(embed=embed, view=self)
-            await atualizar_ranking()
+            await atualizar_ranking(forcar=True)
 
             msg = await interaction.followup.send(f"🎉 Presença registada com sucesso! +{self.pontos} pontos.", ephemeral=True)
             asyncio.create_task(apagar_msg_temporaria(msg))
@@ -325,10 +377,11 @@ async def apagar_msg_temporaria(msg):
         pass
 
 # =========================================================
-# ATUALIZAÇÃO SEGURA DE CANAIS
+# ATUALIZAÇÃO SEGURA DE CANAIS (COM ANTI-RATE LIMIT)
 # =========================================================
 
-async def atualizar_ranking():
+async def atualizar_ranking(forcar=False):
+    global ultimo_hash_ranking
     canal = bot.get_channel(CANAL_RANKING_ID)
     if not canal:
         try:
@@ -336,7 +389,14 @@ async def atualizar_ranking():
         except Exception:
             return
 
-    embed = criar_embed_ranking()
+    ranking_atual = estado.get("ranking", {})
+    hash_atual = json.dumps(ranking_atual, sort_keys=True)
+
+    if not forcar and hash_atual == ultimo_hash_ranking:
+        return
+
+    ultimo_hash_ranking = hash_atual
+    embed = await criar_embed_ranking_async(bot)
     mensagem_id = estado.get("id_mensagem_ranking")
     mensagem = None
 
@@ -448,8 +508,12 @@ async def fechar_lista_depois(mensagem, view_presenca, nome_boss, pontos, segund
     if not canal:
         return
 
-    participantes = sorted(list(view_presenca.participantes))
-    lista_nomes = "\n".join(f"• {p}" for p in participantes) if participantes else "Nenhum participante registado."
+    nomes_participantes = []
+    for uid in sorted(view_presenca.participantes_ids):
+        nome = await obter_nome_membro_async(bot, uid)
+        nomes_participantes.append(f"• {nome}")
+
+    lista_nomes = "\n".join(nomes_participantes) if nomes_participantes else "Nenhum participante registado."
     if len(lista_nomes) > 1024:
         lista_nomes = lista_nomes[:1021] + "..."
 
@@ -458,7 +522,7 @@ async def fechar_lista_depois(mensagem, view_presenca, nome_boss, pontos, segund
         description=f"🔒 **Lista encerrada.** Registo de presenças concluído.\n🏆 **Pontos atribuídos:** `{pontos} pts` por participante.",
         color=0xE74C3C
     )
-    embed_final.add_field(name=f"👥 Participantes Confirmados ({len(participantes)})", value=lista_nomes, inline=False)
+    embed_final.add_field(name=f"👥 Participantes Confirmados ({len(view_presenca.participantes_ids)})", value=lista_nomes, inline=False)
     embed_final.set_footer(text="Pontuações aplicadas e atualizadas no ranking geral.")
 
     try:
@@ -521,7 +585,7 @@ async def on_message(message):
         return
 
     if conteudo_lower == "!forcaratualizar":
-        await atualizar_ranking()
+        await atualizar_ranking(forcar=True)
         await garantir_painel_consulta()
         await message.channel.send("🔄 Painéis, ranking e central de consulta atualizados manualmente com sucesso!")
         return
@@ -594,25 +658,32 @@ async def on_message(message):
             await message.channel.send("⚠️ Uso correto: `!addpontos NomeDoMembro 10`")
             return
 
-        membro_alvo = partes[1].strip()
+        membro_alvo_str = partes[1].strip()
         try:
             pontos_a_adicionar = int(partes[2])
         except ValueError:
             await message.channel.send("❌ A quantidade de pontos deve ser um número inteiro.")
             return
 
+        alvo_chave = None
+        if message.mentions:
+            alvo_chave = str(message.mentions[0].id)
+        else:
+            encontrado = discord.utils.find(lambda m: m.display_name.lower() == membro_alvo_str.lower() or m.name.lower() == membro_alvo_str.lower(), message.guild.members)
+            if encontrado:
+                alvo_chave = str(encontrado.id)
+            else:
+                alvo_chave = membro_alvo_str
+
         async with bot.lock:
             ranking = estado.get("ranking", {})
-            if message.mentions:
-                membro_alvo = message.mentions[0].display_name
-            
-            atual = int(ranking.get(membro_alvo, 0))
-            ranking[membro_alvo] = atual + pontos_a_adicionar
+            atual = int(ranking.get(alvo_chave, 0))
+            ranking[alvo_chave] = atual + pontos_a_adicionar
             estado["ranking"] = ranking
             salvar_estado()
 
-        await atualizar_ranking()
-        await message.channel.send(f"✅ Adicionados **{pontos_a_adicionar} pts** para **{membro_alvo}**! Total atual: `{ranking[membro_alvo]} pts`.")
+        await atualizar_ranking(forcar=True)
+        await message.channel.send(f"✅ Adicionados **{pontos_a_adicionar} pts** para **{membro_alvo_str}**! Total atual: `{ranking[alvo_chave]} pts`.")
         return
 
     if conteudo_lower.startswith("!tirarpontos"):
@@ -621,26 +692,33 @@ async def on_message(message):
             await message.channel.send("⚠️ Uso correto: `!tirarpontos NomeDoMembro 10`")
             return
 
-        membro_alvo = partes[1].strip()
+        membro_alvo_str = partes[1].strip()
         try:
             pontos_a_remover = int(partes[2])
         except ValueError:
             await message.channel.send("❌ A quantidade de pontos deve ser um número inteiro.")
             return
 
+        alvo_chave = None
+        if message.mentions:
+            alvo_chave = str(message.mentions[0].id)
+        else:
+            encontrado = discord.utils.find(lambda m: m.display_name.lower() == membro_alvo_str.lower() or m.name.lower() == membro_alvo_str.lower(), message.guild.members)
+            if encontrado:
+                alvo_chave = str(encontrado.id)
+            else:
+                alvo_chave = membro_alvo_str
+
         async with bot.lock:
             ranking = estado.get("ranking", {})
-            if message.mentions:
-                membro_alvo = message.mentions[0].display_name
-            
-            atual = int(ranking.get(membro_alvo, 0))
+            atual = int(ranking.get(alvo_chave, 0))
             novo_total = max(0, atual - pontos_a_remover)
-            ranking[membro_alvo] = novo_total
+            ranking[alvo_chave] = novo_total
             estado["ranking"] = ranking
             salvar_estado()
 
-        await atualizar_ranking()
-        await message.channel.send(f"🗑️ Removidos **{pontos_a_remover} pts** de **{membro_alvo}**! Total atual: `{novo_total} pts`.")
+        await atualizar_ranking(forcar=True)
+        await message.channel.send(f"🗑️ Removidos **{pontos_a_remover} pts** de **{membro_alvo_str}**! Total atual: `{novo_total} pts`.")
         return
 
 # =========================================================
@@ -685,7 +763,7 @@ async def verificar_boss():
             except Exception as e:
                 print(f"⚠️ Erro no painel: {e}")
 
-        await atualizar_ranking()
+        await atualizar_ranking(forcar=False)
         await garantir_painel_consulta()
 
         canal_alertas = bot.get_channel(CANAL_ALERTAS_ID)
