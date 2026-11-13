@@ -9,7 +9,7 @@ import os
 print("🔄 A iniciar o script do bot...")
 
 # =========================================================
-# CONFIGURAÇÕES DE CANAIS (COLOQUE OS IDs CORRETOS AQUI)
+# CONFIGURAÇÕES DE CANAIS (COLOQUE OS IDs CORRETOS DE CADA CANAL AQUI)
 # =========================================================
 
 TOKEN = os.getenv("TOKEN") or os.getenv("DISCORD_TOKEN")
@@ -17,10 +17,10 @@ TOKEN = os.getenv("TOKEN") or os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise ValueError("❌ TOKEN ou DISCORD_TOKEN não configurado nas variáveis de ambiente do Railway.")
 
-CANAL_PAINEL_ID = 1570446068490043442   # Canal do painel de horários
-CANAL_ALERTAS_ID = 1570454121922822265  # Canal de alertas e abertura de listas
-CANAL_RANKING_ID = 1570446068490043442   # Substitua pelo ID do canal do Ranking
-CANAL_CONSULTA_ID = 1570446068490043442  # Substitua pelo ID do canal de Consulta de Pontos
+CANAL_PAINEL_ID = 1570446068490043442   # Canal exclusivo do Painel de Horários
+CANAL_ALERTAS_ID = 1561134289595142235  # Canal exclusivo para Alertas e Abertura de Listas (!abrirlista)
+CANAL_RANKING_ID = 1570234809719070842   # Substitua pelo ID EXATO do canal exclusivo do Ranking Geral
+CANAL_CONSULTA_ID = 1570413285214527618  # Substitua pelo ID EXATO do canal exclusivo de Consulta de Pontos
 
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 ARQUIVO_ESTADO = "estado.json"
@@ -405,7 +405,7 @@ async def on_message(message):
 
 async def apagar_mensagem_depois(mensagem, segundos):
     global ultima_mensagem_lista
-    asyncio.sleep(segundos)
+    await asyncio.sleep(segundos)
     try:
         await mensagem.delete()
     except Exception:
@@ -450,10 +450,10 @@ async def verificar_boss():
             except Exception as e:
                 print(f"⚠️ Erro no painel: {e}")
 
-        # 2. Ranking
+        # 2. Ranking Geral
         await atualizar_ranking()
 
-        # 3. Central de Consulta Fixa
+        # 3. Central de Consulta Fixa ("Meus Pontos")
         await garantir_painel_consulta()
 
 @bot.event
