@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import json
 import os
 
-print("🔄 A iniciar o script unificado do bot corrigido...")
+print("🔄 A iniciar o script unificado do bot com gestão manual...")
 
 # =========================================================
 # CONFIGURAÇÕES DE CANAIS EXATOS
@@ -393,7 +393,7 @@ async def abrir_lista_automatica(dados_boss):
         print(f"❌ Erro ao abrir lista automática: {erro}")
 
 # =========================================================
-# COMANDOS DE TEXTO (!abrirlista e !fechar)
+# COMANDOS DE TEXTO (!abrirlista, !fechar, !addpontos, !tirarpontos)
 # =========================================================
 
 @bot.event
@@ -402,9 +402,10 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    conteudo = message.content.lower().strip()
+    conteudo = message.content.strip()
+    conteudo_lower = conteudo.lower()
 
-    if conteudo == "!fechar":
+    if conteudo_lower == "!fechar":
         if ultima_mensagem_lista:
             try:
                 await ultima_mensagem_lista.delete()
@@ -416,8 +417,8 @@ async def on_message(message):
             await message.channel.send("⚠️ Nenhuma lista ativa registada recentemente para fechar.")
         return
 
-    if conteudo.startswith("!abrirlista"):
-        partes = message.content.split(maxsplit=1)
+    if conteudo_lower.startswith("!abrirlista"):
+        partes = conteudo.split(maxsplit=1)
         if len(partes) < 2:
             await message.channel.send("⚠️ Uso correto: `!abrirlista crusher`")
             return
@@ -441,6 +442,65 @@ async def on_message(message):
             return
 
         await abrir_lista_automatica(boss_encontrado)
+        return
+
+    # COMANDO MANUAL: !addpontos [Nome do Membro] [Quantidade]
+    if conteudo_lower.startswith("!addpontos"):
+        partes = conteudo.split(maxsplit=2)
+        if len(partes) < 3:
+            await message.channel.send("⚠️ Uso correto: `!addpontos NomeDoMembro 10`")
+            return
+
+        membro_alvo = partes[1].strip()
+        try:
+            pontos_a_adicionar = int(partes[2])
+        except ValueError:
+            await message.channel.send("❌ A quantidade de pontos deve ser um número inteiro.")
+            return
+
+        async with lock:
+            ranking = estado.get("ranking", {})
+            # Se mencionou alguém (@user), pega o display name se possível ou usa o texto
+            if message.mentions:
+                membro_alvo = message.mentions[0].display_name
+            
+            atual = int(ranking.get(membro_alvo, 0))
+            ranking[membro_alvo] = atual + pontos_a_adicionar
+            estado["ranking"] = ranking
+            salvar_estado()
+
+        await atualizar_ranking()
+        await message.channel.send(f"✅ Adicionados **{pontos_a_adicionar} pts** para **{membro_alvo}**! Total atual: `{ranking[membro_alvo]} pts`.")
+        return
+
+    # COMANDO MANUAL: !tirarpontos [Nome do Membro] [Quantidade]
+    if conteudo_lower.startswith("!tirarpontos"):
+        partes = conteudo.split(maxsplit=2)
+        if len(partes) < 3:
+            await message.channel.send("⚠️ Uso correto: `!tirarpontos NomeDoMembro 10`")
+            return
+
+        membro_alvo = partes[1].strip()
+        try:
+            pontos_a_remover = int(partes[2])
+        except ValueError:
+            await message.channel.send("❌ A quantidade de pontos deve ser um número inteiro.")
+            return
+
+        async with lock:
+            ranking = estado.get("ranking", {})
+            if message.mentions:
+                membro_alvo = message.mentions[0].display_name
+            
+            atual = int(ranking.get(membro_alvo, 0))
+            novo_total = max(0, atual - pontos_a_remover)
+            ranking[membro_alvo] = novo_total
+            estado["ranking"] = ranking
+            salvar_estado()
+
+        await atualizar_ranking()
+        await message.channel.send(f"🗑️ Removidos **{pontos_a_remover} pts** de **{membro_alvo}**! Total atual: `{novo_total} pts`.")
+        return
 
 async def apagar_mensagem_depois(mensagem, segundos):
     global ultima_mensagem_lista
