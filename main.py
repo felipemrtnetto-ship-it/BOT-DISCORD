@@ -7,7 +7,7 @@ import json
 import os
 import time
 
-print("🔄 A iniciar o bot com ranking persistente e atualização por boss...")
+print("🔄 A iniciar o bot com fecho automático de lista e painel de participantes...")
 
 # =========================================================
 # CONFIGURAÇÕES DE CANAIS EXATOS
@@ -210,7 +210,7 @@ def criar_embed_ranking():
 def criar_embed_consulta():
     embed = discord.Embed(
         title="🛡️ BOT-TERROR | CENTRAL DE CONSULTA DE PONTOS",
-        description="Clique no botão abaixo para verificar a sua pontuação e posição atual no ranking instantaneamente!\n\n⭐ **Consulta Direta:** A resposta aparece apenas para você.",
+        description="Clique no botão abaixo para verificar a sua pontuação e posição atual no ranking instantaneamente!\n\n⭐ **Consulta Direta:** A resposta aparece apenas para você e apaga-se automaticamente.",
         color=0x2E8B57
     )
     return embed
@@ -244,7 +244,7 @@ class ViewConsultaPontos(discord.ui.View):
         else:
             resposta = f"📊 **Consulta de Pontuação**\n\n👤 **Membro:** {usuario}\n🏆 **Pontos Atuais:** `0 pts`\n🏅 **Posição no Ranking:** `Não ranqueado`"
 
-        await interaction.followup.send(resposta, ephemeral=True)
+        await interaction.followup.send(resposta, ephemeral=True, delete_after=60)
 
 
 class ViewPresenca(discord.ui.View):
@@ -260,7 +260,7 @@ class ViewPresenca(discord.ui.View):
 
         usuario = interaction.user.display_name
         if usuario in self.participantes:
-            await interaction.followup.send("⚠️ Você já registou presença neste boss!", ephemeral=True)
+            await interaction.followup.send("⚠️ Você já registou presença neste boss!", ephemeral=True, delete_after=15)
             return
 
         self.participantes.add(usuario)
@@ -284,10 +284,10 @@ class ViewPresenca(discord.ui.View):
             await interaction.message.edit(embed=embed, view=self)
             await atualizar_ranking()
 
-            await interaction.followup.send(f"🎉 Presença registada com sucesso! +{self.pontos} pontos.", ephemeral=True)
+            await interaction.followup.send(f"🎉 Presença registada com sucesso! +{self.pontos} pontos.", ephemeral=True, delete_after=15)
         except Exception as erro:
             print(f"⚠️ Erro ao atualizar presença: {erro}")
-            await interaction.followup.send("Pontuação registada, mas houve uma falha ao atualizar o painel visual.", ephemeral=True)
+            await interaction.followup.send("Pontuação registada, mas houve uma falha ao atualizar o painel visual.", ephemeral=True, delete_after=15)
 
 # =========================================================
 # ATUALIZAÇÃO SEGURA DE CANAIS
@@ -365,7 +365,7 @@ async def garantir_painel_consulta():
         print(f"⚠️ Erro no painel de consulta: {erro}")
 
 # =========================================================
-# ABERTURA AUTOMÁTICA/MANUAL DA LISTA DE PRESENÇA
+# ABERTURA E FECHO DA LISTA DE PRESENÇA
 # =========================================================
 
 async def abrir_lista_automatica(dados_boss):
@@ -375,6 +375,8 @@ async def abrir_lista_automatica(dados_boss):
         return
 
     nome, horario, dias, mapa, coords, emoji, pontos = dados_boss
+    view = ViewPresenca(nome, pontos)
+
     embed = discord.Embed(
         title=f"🔥 LISTA ABERTA: {emoji} {nome} 🔥",
         description=f"⏰ **Horário:** {horario}\n📍 **Mapa:** {mapa} (`{coords}`)\n🏆 **Vale:** {pontos} pontos\n\n*Clique no botão abaixo para registrar a sua presença!*",
@@ -383,7 +385,6 @@ async def abrir_lista_automatica(dados_boss):
     embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
     embed.add_field(name="👥 Participantes (0)", value="Nenhum participante ainda.", inline=False)
 
-    view = ViewPresenca(nome, pontos)
     try:
         mensagem = await canal.send(
             content="@everyone",
@@ -392,19 +393,47 @@ async def abrir_lista_automatica(dados_boss):
             allowed_mentions=discord.AllowedMentions(everyone=True),
         )
         ultima_mensagem_lista = mensagem
-        asyncio.create_task(apagar_mensagem_depois(mensagem, 900))
+        
+        # Agenda o fecho automático após 15 minutos (900 segundos) passando a view e a mensagem
+        asyncio.create_task(fechar_lista_depois(mensagem, view, nome, pontos, 900))
     except Exception as erro:
         print(f"❌ Erro ao abrir lista automática: {erro}")
 
-async def apagar_mensagem_depois(mensagem, segundos):
+async def fechar_lista_depois(mensagem, view_presenca, nome_boss, pontos, segundos):
     global ultima_mensagem_lista
     await asyncio.sleep(segundos)
+    
+    # Apaga a mensagem antiga de votação interativa
     try:
         await mensagem.delete()
     except Exception:
         pass
+
     if ultima_mensagem_lista and ultima_mensagem_lista.id == mensagem.id:
         ultima_mensagem_lista = None
+
+    # Publica a nova mensagem fixa de "LISTA DE PARTICIPANTES" com os nomes registados
+    canal = bot.get_channel(CANAL_PRESENCA_ID)
+    if not canal:
+        return
+
+    participantes = sorted(list(view_presenca.participantes))
+    lista_nomes = "\n".join(f"• {p}" for p in participantes) if participantes else "Nenhum participante registado."
+    if len(lista_nomes) > 1024:
+        lista_nomes = lista_nomes[:1021] + "..."
+
+    embed_final = discord.Embed(
+        title=f"📋 LISTA DE PARTICIPANTES: {nome_boss}",
+        description=f"🔒 **Lista encerrada.** Registo de presenças concluído.\n🏆 **Pontos atribuídos:** `{pontos} pts` por participante.",
+        color=0xE74C3C
+    )
+    embed_final.add_field(name=f"👥 Participantes Confirmados ({len(participantes)})", value=lista_nomes, inline=False)
+    embed_final.set_footer(text="Pontuações aplicadas e atualizadas no ranking geral.")
+
+    try:
+        await canal.send(embed=embed_final)
+    except Exception as e:
+        print(f"⚠️ Erro ao enviar painel final de participantes: {e}")
 
 # =========================================================
 # COMANDOS DE TEXTO E PAINEL DE CONTROLO
@@ -492,9 +521,10 @@ async def on_message(message):
     if conteudo_lower == "!fechar":
         if ultima_mensagem_lista:
             try:
+                # Se fechar manualmente com !fechar, também podemos apagar e disparar o painel final
                 await ultima_mensagem_lista.delete()
                 ultima_mensagem_lista = None
-                await message.channel.send("🔒 Lista encerrada com sucesso!")
+                await message.channel.send("🔒 Lista encerrada manualmente com sucesso!")
             except Exception:
                 await message.channel.send("⚠️ Não foi possível apagar a lista ativa.")
         else:
