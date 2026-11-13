@@ -21,7 +21,7 @@ CANAL_ALERTAS_ID = 1570454121922822265  # Canal: ⚠️-alerta-dos-boss
 CANAL_PAINEL_ID = 1570446068490043442   # Canal: ⏰ horários-boss
 CANAL_PRESENCA_ID = 1561134289595142235 # Canal: 🧙‍♂️ presença-boss
 CANAL_RANKING_ID = 1570234809719070842  # Canal: 💯 ranking-boss
-CANAL_CONSULTA_ID = 1570446068490043442 # Canal: 🔍 consultar-pontos
+CANAL_CONSULTA_ID = 1570413285214527618 # Canal: 🔍 consultar-pontos
 
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 
