@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import json
 import os
 
-print("🔄 A iniciar o script unificado do bot com suporte a volume...")
+print("🔄 A iniciar o script unificado do bot com volume em /data...")
 
 # =========================================================
 # CONFIGURAÇÕES DE CANAIS EXATOS
@@ -25,9 +25,8 @@ CANAL_CONSULTA_ID = 1570446068490043442 # Canal: 🔍 consultar-pontos
 
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 
-# Garante que o estado.json é lido/gravado na pasta persistente do volume
-DIRETORIO_ATUAL = os.path.dirname(os.path.abspath(__file__))
-ARQUIVO_ESTADO = os.path.join(DIRETORIO_ATUAL, "estado.json")
+# Garante que o estado.json é lido/gravado na pasta persistente do volume em /data
+ARQUIVO_ESTADO = "/data/estado.json"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -67,6 +66,8 @@ def estado_padrao():
     }
 
 def carregar_estado():
+    # Cria a pasta /data caso não exista
+    os.makedirs(os.path.dirname(ARQUIVO_ESTADO), exist_ok=True)
     if not os.path.exists(ARQUIVO_ESTADO):
         return estado_padrao()
     try:
@@ -85,6 +86,7 @@ def carregar_estado():
 def salvar_estado(dados=None):
     dados = dados if dados is not None else estado
     try:
+        os.makedirs(os.path.dirname(ARQUIVO_ESTADO), exist_ok=True)
         arquivo_temporario = ARQUIVO_ESTADO + ".tmp"
         with open(arquivo_temporario, "w", encoding="utf-8") as arquivo:
             json.dump(dados, arquivo, ensure_ascii=False, indent=4)
@@ -227,331 +229,4 @@ class ViewConsultaPontos(discord.ui.View):
                 break
 
         if posicao_usuario:
-            resposta = f"📊 **Consulta de Pontuação**\n\n👤 **Membro:** {usuario}\n🏆 **Pontos Atuais:** `{pontos_usuario} pts`\n🏅 **Posição no Ranking:** `#{posicao_usuario}`"
-        else:
-            resposta = f"📊 **Consulta de Pontuação**\n\n👤 **Membro:** {usuario}\n🏆 **Pontos Atuais:** `0 pts`\n🏅 **Posição no Ranking:** `Não ranqueado`"
-
-        await interaction.followup.send(resposta, ephemeral=True)
-
-
-class ViewPresenca(discord.ui.View):
-    def __init__(self, nome_boss, pontos):
-        super().__init__(timeout=900)
-        self.nome_boss = nome_boss
-        self.pontos = pontos
-        self.participantes = set()
-
-    @discord.ui.button(label="✅ Registrar Presença", style=discord.ButtonStyle.green, custom_id="registrar_presenca")
-    async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-
-        usuario = interaction.user.display_name
-        if usuario in self.participantes:
-            await interaction.followup.send("⚠️ Você já registou presença neste boss!", ephemeral=True)
-            return
-
-        self.participantes.add(usuario)
-
-        async with lock:
-            ranking = estado.get("ranking", {})
-            ranking[usuario] = int(ranking.get(usuario, 0)) + self.pontos
-            estado["ranking"] = ranking
-            salvar_estado()
-
-        nomes = "\n".join(f"• {p}" for p in sorted(self.participantes)) or "Nenhum participante ainda."
-        if len(nomes) > 1024:
-            nomes = nomes[:1021] + "..."
-
-        try:
-            embed = interaction.message.embeds[0]
-            embed.clear_fields()
-            embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
-            embed.add_field(name=f"👥 Participantes ({len(self.participantes)})", value=nomes, inline=False)
-
-            await interaction.message.edit(embed=embed, view=self)
-            await atualizar_ranking()
-
-            await interaction.followup.send(f"🎉 Presença registada com sucesso! +{self.pontos} pontos.", ephemeral=True)
-        except Exception as erro:
-            print(f"⚠️ Erro ao atualizar presença: {erro}")
-            await interaction.followup.send("Pontuação registada, mas houve uma falha ao atualizar o painel visual.", ephemeral=True)
-
-# =========================================================
-# ATUALIZAÇÃO DE CANAIS
-# =========================================================
-
-async def atualizar_ranking():
-    canal = bot.get_channel(CANAL_RANKING_ID)
-    if not canal:
-        try:
-            canal = await bot.fetch_channel(CANAL_RANKING_ID)
-        except Exception:
-            return
-
-    embed = criar_embed_ranking()
-    mensagem_id = estado.get("id_mensagem_ranking")
-    mensagem = None
-
-    if mensagem_id:
-        try:
-            mensagem = await canal.fetch_message(mensagem_id)
-        except Exception:
-            mensagem = None
-
-    try:
-        if mensagem:
-            await mensagem.edit(embed=embed)
-        else:
-            async for msg in canal.history(limit=15):
-                if msg.author == bot.user and msg.embeds and "RANKING GERAL" in (msg.embeds[0].title or ""):
-                    mensagem = msg
-                    break
-            if mensagem:
-                await mensagem.edit(embed=embed)
-            else:
-                mensagem = await canal.send(embed=embed)
-            estado["id_mensagem_ranking"] = mensagem.id
-            salvar_estado()
-    except Exception as erro:
-        print(f"⚠️ Erro no ranking: {erro}")
-
-async def garantir_painel_consulta():
-    canal = bot.get_channel(CANAL_CONSULTA_ID)
-    if not canal:
-        try:
-            canal = await bot.fetch_channel(CANAL_CONSULTA_ID)
-        except Exception:
-            return
-
-    embed = criar_embed_consulta()
-    view = ViewConsultaPontos()
-    mensagem_id = estado.get("id_mensagem_consulta")
-    mensagem = None
-
-    if mensagem_id:
-        try:
-            mensagem = await canal.fetch_message(mensagem_id)
-        except Exception:
-            mensagem = None
-
-    try:
-        if mensagem:
-            await mensagem.edit(embed=embed, view=view)
-        else:
-            async for msg in canal.history(limit=15):
-                if msg.author == bot.user and msg.embeds and "CENTRAL DE CONSULTA" in (msg.embeds[0].title or ""):
-                    mensagem = msg
-                    break
-            if mensagem:
-                await mensagem.edit(embed=embed, view=view)
-            else:
-                mensagem = await canal.send(embed=embed, view=view)
-            estado["id_mensagem_consulta"] = mensagem.id
-            salvar_estado()
-    except Exception as erro:
-        print(f"⚠️ Erro no painel de consulta: {erro}")
-
-# =========================================================
-# ABERTURA AUTOMÁTICA DA LISTA DE PRESENÇA (5 MIN)
-# =========================================================
-
-async def abrir_lista_automatica(dados_boss):
-    global ultima_mensagem_lista
-    canal = bot.get_channel(CANAL_PRESENCA_ID)
-    if not canal:
-        return
-
-    nome, horario, dias, mapa, coords, emoji, pontos = dados_boss
-    embed = discord.Embed(
-        title=f"🔥 LISTA ABERTA: {emoji} {nome} 🔥",
-        description=f"⏰ **Horário:** {horario}\n📍 **Mapa:** {mapa} (`{coords}`)\n🏆 **Vale:** {pontos} pontos\n\n*Clique no botão abaixo para registrar a sua presença!*",
-        color=0x2ECC71,
-    )
-    embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
-    embed.add_field(name="👥 Participantes (0)", value="Nenhum participante ainda.", inline=False)
-
-    view = ViewPresenca(nome, pontos)
-    try:
-        mensagem = await canal.send(
-            content="@everyone",
-            embed=embed,
-            view=view,
-            allowed_mentions=discord.AllowedMentions(everyone=True),
-        )
-        ultima_mensagem_lista = mensagem
-        asyncio.create_task(apagar_mensagem_depois(mensagem, 900))
-    except Exception as erro:
-        print(f"❌ Erro ao abrir lista automática: {erro}")
-
-# =========================================================
-# COMANDOS DE TEXTO (!abrirlista e !fechar)
-# =========================================================
-
-@bot.event
-async def on_message(message):
-    global ultima_mensagem_lista
-    if message.author.bot:
-        return
-
-    conteudo = message.content.lower().strip()
-
-    if conteudo == "!fechar":
-        if ultima_mensagem_lista:
-            try:
-                await ultima_mensagem_lista.delete()
-                ultima_mensagem_lista = None
-                await message.channel.send("🔒 Lista encerrada com sucesso!")
-            except Exception:
-                await message.channel.send("⚠️ Não foi possível apagar a lista ativa.")
-        else:
-            await message.channel.send("⚠️ Nenhuma lista ativa registada recentemente para fechar.")
-        return
-
-    if conteudo.startswith("!abrirlista"):
-        partes = message.content.split(maxsplit=1)
-        if len(partes) < 2:
-            await message.channel.send("⚠️ Uso correto: `!abrirlista crusher`")
-            return
-
-        termo_busca = partes[1].strip().lower()
-        boss_encontrado = None
-
-        for chave, dados_boss in BOSSES.items():
-            if termo_busca in chave:
-                boss_encontrado = dados_boss
-                break
-        
-        if not boss_encontrado:
-            for chave, dados_boss in BOSSES.items():
-                if any(p in chave for p in termo_busca.split()):
-                    boss_encontrado = dados_boss
-                    break
-
-        if not boss_encontrado:
-            await message.channel.send("❌ Boss não encontrado! Verifique o nome.")
-            return
-
-        await abrir_lista_automatica(boss_encontrado)
-
-async def apagar_mensagem_depois(mensagem, segundos):
-    global ultima_mensagem_lista
-    await asyncio.sleep(segundos)
-    try:
-        await mensagem.delete()
-    except Exception:
-        pass
-    if ultima_mensagem_lista and ultima_mensagem_lista.id == mensagem.id:
-        ultima_mensagem_lista = None
-
-# =========================================================
-# LOOP PRINCIPAL UNIFICADO
-# =========================================================
-
-@tasks.loop(seconds=5)
-async def verificar_boss():
-    async with lock:
-        agora = datetime.now(TIMEZONE)
-        weekday_atual = agora.weekday()
-
-        # 1. Atualizar ou Editar o Painel no canal `horários-boss` (Sem duplicar)
-        canal_painel = bot.get_channel(CANAL_PAINEL_ID)
-        if canal_painel:
-            embed_painel = criar_embed_agenda_detalhada(agora)
-            msg_id = estado.get("id_mensagem_painel")
-            msg_painel = None
-            
-            if msg_id:
-                try:
-                    msg_painel = await canal_painel.fetch_message(msg_id)
-                except Exception:
-                    msg_painel = None
-
-            try:
-                if msg_painel:
-                    await msg_painel.edit(embed=embed_painel)
-                else:
-                    async for m in canal_painel.history(limit=15):
-                        if m.author == bot.user and m.embeds and "HORÁRIOS DE BOSSES" in (m.embeds[0].title or ""):
-                            msg_painel = m
-                            break
-                    
-                    if msg_painel:
-                        await msg_painel.edit(embed=embed_painel)
-                        estado["id_mensagem_painel"] = msg_painel.id
-                        salvar_estado()
-                    else:
-                        nova_msg = await canal_painel.send(embed=embed_painel)
-                        estado["id_mensagem_painel"] = nova_msg.id
-                        salvar_estado()
-            except Exception as e:
-                print(f"⚠️ Erro no painel: {e}")
-
-        # 2. Atualizar Ranking no canal `ranking-boss`
-        await atualizar_ranking()
-
-        # 3. Garantir Painel de Consulta no canal `consultar-pontos`
-        await garantir_painel_consulta()
-
-        # 4. Alertas de 10 min e Abertura Automática de Listas aos 5 min
-        canal_alertas = bot.get_channel(CANAL_ALERTAS_ID)
-        
-        for chave, dados_boss in BOSSES.items():
-            nome, horario, dias, mapa, coords, emoji, pontos = dados_boss
-            if dias is not None and weekday_atual not in dias:
-                continue
-
-            proxima_ocorrencia = proxima_data_boss(dados_boss, agora)
-            if proxima_ocorrencia is None:
-                continue
-
-            diferenca = (proxima_ocorrencia - agora).total_seconds()
-            data_hoje = agora.strftime('%Y-%m-%d')
-            
-            chave_alerta_10m = f"{nome}_{horario}_{data_hoje}_10min"
-            chave_lista_5m = f"{nome}_{horario}_{data_hoje}_5min_lista"
-
-            # Alerta de 10 minutos exatos no canal de alertas (`⚠️-alerta-dos-boss`)
-            if 590 <= diferenca <= 600:
-                if chave_alerta_10m not in alertas_10min_memoria:
-                    alertas_10min_memoria.add(chave_alerta_10m)
-                    if canal_alertas:
-                        embed_alerta = discord.Embed(
-                            title=f"🔥 BOSS {emoji} {nome} NASCENDO EM BREVE! 🔥",
-                            description=(
-                                f"⏰ **Horário:** {horario}\n"
-                                f"📍 **Mapa:** {mapa}\n"
-                                f"📌 **Coordenadas:** `{coords}`\n"
-                                f"🏆 **Pontuação:** `{pontos} pontos`\n\n"
-                                "*Corram para o local!*"
-                            ),
-                            color=0xFFA500,
-                        )
-                        try:
-                            await canal_alertas.send(
-                                content="@everyone",
-                                embed=embed_alerta,
-                                allowed_mentions=discord.AllowedMentions(everyone=True),
-                            )
-                        except Exception as erro:
-                            print(f"⚠️ Erro no alerta de 10 min: {erro}")
-
-            # Abertura automática da lista de presença aos 5 minutos exatos no canal `presença-boss`
-            if 290 <= diferenca <= 300:
-                if chave_lista_5m not in listas_5min_memoria:
-                    listas_5min_memoria.add(chave_lista_5m)
-                    await abrir_lista_automatica(dados_boss)
-
-@bot.event
-async def on_ready():
-    print(f"---------------------------------------")
-    print(f"✅ Bot unificado conectado como: {bot.user}")
-    print(f"🕒 Fuso horário: {TIMEZONE}")
-    print(f"---------------------------------------")
-    
-    bot.add_view(ViewConsultaPontos())
-
-    if not verificar_boss.is_running():
-        verificar_boss.start()
-
-if __name__ == "__main__":
-    bot.run(TOKEN)
+            resposta = f"📊 **Consulta de Pontuação**\n\n👤 **Membro:** {usuario}\
