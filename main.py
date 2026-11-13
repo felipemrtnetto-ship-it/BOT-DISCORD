@@ -7,7 +7,7 @@ import json
 import os
 import time
 
-print("🔄 A iniciar o bot com fecho automático de lista e painel de participantes...")
+print("🔄 A iniciar o bot com painel de horários limpo (sem carimbo)...")
 
 # =========================================================
 # CONFIGURAÇÕES DE CANAIS EXATOS
@@ -166,8 +166,7 @@ def criar_embed_agenda_detalhada(agora):
     if not encontrou_algum:
         embed.description = "Nenhum boss programado para hoje."
     
-    agora_str = datetime.now(TIMEZONE).strftime('%H:%M:%S')
-    embed.add_field(name="\u200b", value=f"━━━━━━━━━━━━━━━━━━━━\n*Fique atento aos horários!* 🕒 Última atualização: `{agora_str}`", inline=False)
+    embed.add_field(name="\u200b", value="━━━━━━━━━━━━━━━━━━━━\n*Fique atento aos horários e prepare-se para disputar os bosses!*", inline=False)
     return embed
 
 def criar_embed_ranking():
@@ -244,7 +243,16 @@ class ViewConsultaPontos(discord.ui.View):
         else:
             resposta = f"📊 **Consulta de Pontuação**\n\n👤 **Membro:** {usuario}\n🏆 **Pontos Atuais:** `0 pts`\n🏅 **Posição no Ranking:** `Não ranqueado`"
 
-        await interaction.followup.send(resposta, ephemeral=True, delete_after=60)
+        msg_enviada = await interaction.followup.send(resposta, ephemeral=True)
+        
+        async def apagar_depois_de_tempo():
+            await asyncio.sleep(60)
+            try:
+                await msg_enviada.delete()
+            except Exception:
+                pass
+
+        asyncio.create_task(apagar_depois_de_tempo())
 
 
 class ViewPresenca(discord.ui.View):
@@ -260,7 +268,8 @@ class ViewPresenca(discord.ui.View):
 
         usuario = interaction.user.display_name
         if usuario in self.participantes:
-            await interaction.followup.send("⚠️ Você já registou presença neste boss!", ephemeral=True, delete_after=15)
+            msg = await interaction.followup.send("⚠️ Você já registou presença neste boss!", ephemeral=True)
+            asyncio.create_task(apagar_msg_temporaria(msg))
             return
 
         self.participantes.add(usuario)
@@ -284,10 +293,19 @@ class ViewPresenca(discord.ui.View):
             await interaction.message.edit(embed=embed, view=self)
             await atualizar_ranking()
 
-            await interaction.followup.send(f"🎉 Presença registada com sucesso! +{self.pontos} pontos.", ephemeral=True, delete_after=15)
+            msg = await interaction.followup.send(f"🎉 Presença registada com sucesso! +{self.pontos} pontos.", ephemeral=True)
+            asyncio.create_task(apagar_msg_temporaria(msg))
         except Exception as erro:
             print(f"⚠️ Erro ao atualizar presença: {erro}")
-            await interaction.followup.send("Pontuação registada, mas houve uma falha ao atualizar o painel visual.", ephemeral=True, delete_after=15)
+            msg = await interaction.followup.send("Pontuação registada, mas houve uma falha ao atualizar o painel visual.", ephemeral=True)
+            asyncio.create_task(apagar_msg_temporaria(msg))
+
+async def apagar_msg_temporaria(msg):
+    await asyncio.sleep(15)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
 
 # =========================================================
 # ATUALIZAÇÃO SEGURA DE CANAIS
@@ -393,333 +411,10 @@ async def abrir_lista_automatica(dados_boss):
             allowed_mentions=discord.AllowedMentions(everyone=True),
         )
         ultima_mensagem_lista = mensagem
-        
-        # Agenda o fecho automático após 15 minutos (900 segundos) passando a view e a mensagem
         asyncio.create_task(fechar_lista_depois(mensagem, view, nome, pontos, 900))
     except Exception as erro:
         print(f"❌ Erro ao abrir lista automática: {erro}")
 
 async def fechar_lista_depois(mensagem, view_presenca, nome_boss, pontos, segundos):
     global ultima_mensagem_lista
-    await asyncio.sleep(segundos)
-    
-    # Apaga a mensagem antiga de votação interativa
-    try:
-        await mensagem.delete()
-    except Exception:
-        pass
-
-    if ultima_mensagem_lista and ultima_mensagem_lista.id == mensagem.id:
-        ultima_mensagem_lista = None
-
-    # Publica a nova mensagem fixa de "LISTA DE PARTICIPANTES" com os nomes registados
-    canal = bot.get_channel(CANAL_PRESENCA_ID)
-    if not canal:
-        return
-
-    participantes = sorted(list(view_presenca.participantes))
-    lista_nomes = "\n".join(f"• {p}" for p in participantes) if participantes else "Nenhum participante registado."
-    if len(lista_nomes) > 1024:
-        lista_nomes = lista_nomes[:1021] + "..."
-
-    embed_final = discord.Embed(
-        title=f"📋 LISTA DE PARTICIPANTES: {nome_boss}",
-        description=f"🔒 **Lista encerrada.** Registo de presenças concluído.\n🏆 **Pontos atribuídos:** `{pontos} pts` por participante.",
-        color=0xE74C3C
-    )
-    embed_final.add_field(name=f"👥 Participantes Confirmados ({len(participantes)})", value=lista_nomes, inline=False)
-    embed_final.set_footer(text="Pontuações aplicadas e atualizadas no ranking geral.")
-
-    try:
-        await canal.send(embed=embed_final)
-    except Exception as e:
-        print(f"⚠️ Erro ao enviar painel final de participantes: {e}")
-
-# =========================================================
-# COMANDOS DE TEXTO E PAINEL DE CONTROLO
-# =========================================================
-
-@bot.event
-async def on_message(message):
-    global ultima_mensagem_lista
-    if message.author.bot:
-        return
-
-    conteudo = message.content.strip()
-    conteudo_lower = conteudo.lower()
-
-    if conteudo_lower == "!status":
-        uptime_segundos = int(time.time() - tempo_inicio_bot)
-        horas = uptime_segundos // 3600
-        minutos = (uptime_segundos % 3600) // 60
-        
-        embed_status = discord.Embed(
-            title="🛡️ PAINEL DE CONTROLO | BOT-TERROR",
-            description="Estado atual dos sistemas do bot na nuvem (Railway):",
-            color=0x3498DB
-        )
-        embed_status.add_field(name="🟢 Estado", value="Online e Operacional", inline=True)
-        embed_status.add_field(name="⏱️ Uptime", value=f"{horas}h {minutos}m", inline=True)
-        embed_status.add_field(name="🏆 Total Ranqueados", value=f"{len(estado.get('ranking', {}))} membros", inline=True)
-        embed_status.add_field(name="📂 Volume Persistente", value="Ativo (`/data/estado.json`)", inline=False)
-        embed_status.set_footer(text="Use !comandos para ver a lista de ações disponíveis.")
-        await message.channel.send(embed=embed_status)
-        return
-
-    if conteudo_lower == "!comandos":
-        embed_cmd = discord.Embed(
-            title="📜 PAINEL DE GESTÃO - LISTA DE COMANDOS",
-            description="Aqui estão todos os comandos administrativos disponíveis:",
-            color=0xE67E22
-        )
-        embed_cmd.add_field(name="⚙️ Controlo & Testes", value=(
-            "`!status` - Mostra o painel de controlo e tempo ligado\n"
-            "`!forcaratualizar` - Força a atualização imediata de todos os painéis\n"
-            "`!ping` - Testa a latência de resposta do bot\n"
-            "`!testeboss [nome]` - Força um teste abrindo a lista de um boss"
-        ), inline=False)
-        embed_cmd.add_field(name="🏆 Gestão de Pontos", value=(
-            "`!addpontos [Membro] [Qtde]` - Adiciona pontos a um membro\n"
-            "`!tirarpontos [Membro] [Qtde]` - Remove pontos de um membro"
-        ), inline=False)
-        embed_cmd.add_field(name="⏰ Gestão de Listas", value=(
-            "`!abrirlista [boss]` - Abre manualmente a lista de um boss\n"
-            "`!fechar` - Fecha a lista de presença ativa"
-        ), inline=False)
-        await message.channel.send(embed=embed_cmd)
-        return
-
-    if conteudo_lower == "!forcaratualizar":
-        await atualizar_ranking()
-        await garantir_painel_consulta()
-        await message.channel.send("🔄 Painéis, ranking e central de consulta atualizados manualmente com sucesso!")
-        return
-
-    if conteudo_lower == "!ping":
-        latencia = round(bot.latency * 1000)
-        await message.channel.send(f"🏓 Pong! Latência de resposta com o Discord: `{latencia}ms`.")
-        return
-
-    if conteudo_lower.startswith("!testeboss"):
-        partes = conteudo.split(maxsplit=1)
-        if len(partes) < 2:
-            await message.channel.send("⚠️ Uso correto: `!testeboss crusher`")
-            return
-        termo = partes[1].strip().lower()
-        boss_encontrado = None
-        for chave, dados_boss in BOSSES.items():
-            if termo in chave:
-                boss_encontrado = dados_boss
-                break
-        if not boss_encontrado:
-            await message.channel.send("❌ Boss de teste não encontrado.")
-            return
-        await abrir_lista_automatica(boss_encontrado)
-        await message.channel.send(f"🧪 **[TESTE]** Lista de presença aberta com sucesso para o boss: **{boss_encontrado[0]}**!")
-        return
-
-    if conteudo_lower == "!fechar":
-        if ultima_mensagem_lista:
-            try:
-                # Se fechar manualmente com !fechar, também podemos apagar e disparar o painel final
-                await ultima_mensagem_lista.delete()
-                ultima_mensagem_lista = None
-                await message.channel.send("🔒 Lista encerrada manualmente com sucesso!")
-            except Exception:
-                await message.channel.send("⚠️ Não foi possível apagar a lista ativa.")
-        else:
-            await message.channel.send("⚠️ Nenhuma lista ativa registada recentemente para fechar.")
-        return
-
-    if conteudo_lower.startswith("!abrirlista"):
-        partes = conteudo.split(maxsplit=1)
-        if len(partes) < 2:
-            await message.channel.send("⚠️ Uso correto: `!abrirlista crusher`")
-            return
-
-        termo_busca = partes[1].strip().lower()
-        boss_encontrado = None
-
-        for chave, dados_boss in BOSSES.items():
-            if termo_busca in chave:
-                boss_encontrado = dados_boss
-                break
-        
-        if not boss_encontrado:
-            for chave, dados_boss in BOSSES.items():
-                if any(p in chave for p in termo_busca.split()):
-                    boss_encontrado = dados_boss
-                    break
-
-        if not boss_encontrado:
-            await message.channel.send("❌ Boss não encontrado! Verifique o nome.")
-            return
-
-        await abrir_lista_automatica(boss_encontrado)
-        return
-
-    if conteudo_lower.startswith("!addpontos"):
-        partes = conteudo.split(maxsplit=2)
-        if len(partes) < 3:
-            await message.channel.send("⚠️ Uso correto: `!addpontos NomeDoMembro 10`")
-            return
-
-        membro_alvo = partes[1].strip()
-        try:
-            pontos_a_adicionar = int(partes[2])
-        except ValueError:
-            await message.channel.send("❌ A quantidade de pontos deve ser um número inteiro.")
-            return
-
-        async with lock:
-            ranking = estado.get("ranking", {})
-            if message.mentions:
-                membro_alvo = message.mentions[0].display_name
-            
-            atual = int(ranking.get(membro_alvo, 0))
-            ranking[membro_alvo] = atual + pontos_a_adicionar
-            estado["ranking"] = ranking
-            salvar_estado()
-
-        await atualizar_ranking()
-        await message.channel.send(f"✅ Adicionados **{pontos_a_adicionar} pts** para **{membro_alvo}**! Total atual: `{ranking[membro_alvo]} pts`.")
-        return
-
-    if conteudo_lower.startswith("!tirarpontos"):
-        partes = conteudo.split(maxsplit=2)
-        if len(partes) < 3:
-            await message.channel.send("⚠️ Uso correto: `!tirarpontos NomeDoMembro 10`")
-            return
-
-        membro_alvo = partes[1].strip()
-        try:
-            pontos_a_remover = int(partes[2])
-        except ValueError:
-            await message.channel.send("❌ A quantidade de pontos deve ser um número inteiro.")
-            return
-
-        async with lock:
-            ranking = estado.get("ranking", {})
-            if message.mentions:
-                membro_alvo = message.mentions[0].display_name
-            
-            atual = int(ranking.get(membro_alvo, 0))
-            novo_total = max(0, atual - pontos_a_remover)
-            ranking[membro_alvo] = novo_total
-            estado["ranking"] = ranking
-            salvar_estado()
-
-        await atualizar_ranking()
-        await message.channel.send(f"🗑️ Removidos **{pontos_a_remover} pts** de **{membro_alvo}**! Total atual: `{novo_total} pts`.")
-        return
-
-# =========================================================
-# LOOP PRINCIPAL UNIFICADO (30 SEG)
-# =========================================================
-
-@tasks.loop(seconds=30)
-async def verificar_boss():
-    async with lock:
-        agora = datetime.now(TIMEZONE)
-        weekday_atual = agora.weekday()
-
-        # 1. Atualizar Painel de Horários
-        canal_painel = bot.get_channel(CANAL_PAINEL_ID)
-        if canal_painel:
-            embed_painel = criar_embed_agenda_detalhada(agora)
-            msg_id = estado.get("id_mensagem_painel")
-            msg_painel = None
-            
-            if msg_id:
-                try:
-                    msg_painel = await canal_painel.fetch_message(msg_id)
-                except Exception:
-                    msg_painel = None
-
-            try:
-                if msg_painel:
-                    await msg_painel.edit(embed=embed_painel)
-                else:
-                    async for m in canal_painel.history(limit=15):
-                        if m.author == bot.user and m.embeds and "HORÁRIOS DE BOSSES" in (m.embeds[0].title or ""):
-                            msg_painel = m
-                            break
-                    
-                    if msg_painel:
-                        await msg_painel.edit(embed=embed_painel)
-                        estado["id_mensagem_painel"] = msg_painel.id
-                        salvar_estado()
-                    else:
-                        nova_msg = await canal_painel.send(embed=embed_painel)
-                        estado["id_mensagem_painel"] = nova_msg.id
-                        salvar_estado()
-            except Exception as e:
-                print(f"⚠️ Erro no painel: {e}")
-
-        # 2. Atualizar Ranking Geral Acumulado
-        await atualizar_ranking()
-
-        # 3. Garantir Painel de Consulta Fixo com Botão
-        await garantir_painel_consulta()
-
-        # 4. Alertas de 10 min e Abertura Automática de Listas aos 5 min
-        canal_alertas = bot.get_channel(CANAL_ALERTAS_ID)
-        
-        for chave, dados_boss in BOSSES.items():
-            nome, horario, dias, mapa, coords, emoji, pontos = dados_boss
-            if dias is not None and weekday_atual not in dias:
-                continue
-
-            proxima_ocorrencia = proxima_data_boss(dados_boss, agora)
-            if proxima_ocorrencia is None:
-                continue
-
-            diferenca = (proxima_ocorrencia - agora).total_seconds()
-            data_hoje = agora.strftime('%Y-%m-%d')
-            
-            chave_alerta_10m = f"{nome}_{horario}_{data_hoje}_10min"
-            chave_lista_5m = f"{nome}_{horario}_{data_hoje}_5min_lista"
-
-            if 570 <= diferenca <= 600:
-                if chave_alerta_10m not in alertas_10min_memoria:
-                    alertas_10min_memoria.add(chave_alerta_10m)
-                    if canal_alertas:
-                        embed_alerta = discord.Embed(
-                            title=f"🔥 BOSS {emoji} {nome} NASCENDO EM BREVE! 🔥",
-                            description=(
-                                f"⏰ **Horário:** {horario}\n"
-                                f"📍 **Mapa:** {mapa}\n"
-                                f"📌 **Coordenadas:** `{coords}`\n"
-                                f"🏆 **Pontuação:** `{pontos} pontos`\n\n"
-                                "*Corram para o local!*"
-                            ),
-                            color=0xFFA500,
-                        )
-                        try:
-                            await canal_alertas.send(
-                                content="@everyone",
-                                embed=embed_alerta,
-                                allowed_mentions=discord.AllowedMentions(everyone=True),
-                            )
-                        except Exception as erro:
-                            print(f"⚠️ Erro no alerta de 10 min: {erro}")
-
-            if 270 <= diferenca <= 300:
-                if chave_lista_5m not in listas_5min_memoria:
-                    listas_5min_memoria.add(chave_lista_5m)
-                    await abrir_lista_automatica(dados_boss)
-
-@bot.event
-async def on_ready():
-    print(f"---------------------------------------")
-    print(f"✅ Bot unificado conectado com sucesso como: {bot.user}")
-    print(f"🕒 Fuso horário: {TIMEZONE}")
-    print(f"---------------------------------------")
-    
-    bot.add_view(ViewConsultaPontos())
-
-    if not verificar_boss.is_running():
-        verificar_boss.start()
-
-if __name__ == "__main__":
-    bot.run(TOKEN)
+    await asyncio
