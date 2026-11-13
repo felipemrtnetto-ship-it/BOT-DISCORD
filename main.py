@@ -7,7 +7,7 @@ import json
 import os
 import time
 
-print("🔄 A iniciar o bot definitivo (ID do Discord + Anti-Rate Limit)...")
+print("🔄 A iniciar o bot unificado (Ranking Limpo + Leilão + Comando de Teste)...")
 
 # =========================================================
 # CONFIGURAÇÕES DE CANAIS EXATOS
@@ -19,10 +19,12 @@ if not TOKEN:
     raise ValueError("❌ TOKEN ou DISCORD_TOKEN não configurado nas variáveis de ambiente do Railway.")
 
 CANAL_ALERTAS_ID = 1570454121922822265  # Canal: ⚠️-alerta-dos-boss
-CANAL_PAINEL_ID = 1570446068490043442   # Canal: ⏰ horários-boss
-CANAL_PRESENCA_ID = 1561134289595142235 # Canal: 🧙‍♂️ presença-boss
-CANAL_RANKING_ID = 1570234809719070842  # Canal: 💯 ranking-boss
-CANAL_CONSULTA_ID = 1570413285214527618 # Canal: 🔍 consultar-pontos
+CANAL_PAINEL_ID = 1570446068490043442   # Canal: ⏰ horarios-boss-⏱️
+CANAL_CONSULTA_ID = 1570413285214527618 # Canal: 🔍 consultar-pontos-🔍
+CANAL_LEILAO_ID = 1570785989461282966   # Canal: 🏆 leilão-🏆 (Coloque o ID correto aqui)
+CANAL_PRESENCA_ID = 1561134289595142235 # Canal: 🧙‍♂️ presença-boss-🧙‍♂️
+CANAL_RANKING_ID = 1570234809719070842  # Canal: 💯 ranking-boss-💯
+CANAL_DROP_BOYS_ID = 1570170749694775458 # Canal: 🏴‍☠️ drop-boss-🏴‍☠️ (Coloque o ID correto aqui)
 
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 ARQUIVO_ESTADO = "/data/estado.json"
@@ -44,11 +46,12 @@ class MeuBot(discord.Client):
         print("⚙️ setup_hook executado: Views e loops iniciados com sucesso.")
 
     async def on_ready(self):
-        print(f"---------------------------------------")
+        print("---------------------------------------")
         print(f"✅ Bot conectado com sucesso como: {self.user}")
         print(f"🕒 Fuso horário: {TIMEZONE}")
-        print(f"---------------------------------------")
+        print("---------------------------------------")
         await migrar_ranking_para_ids(self)
+        await atualizar_ranking(forcar=True)
 
 bot = MeuBot(intents=intents)
 
@@ -57,6 +60,22 @@ listas_5min_memoria = set()
 ultima_mensagem_lista = None
 tempo_inicio_bot = time.time()
 ultimo_hash_ranking = ""
+aguardando_confirmacao_zerar = False
+
+# =========================================================
+# VARIÁVEIS DO SISTEMA DE LEILÃO
+# =========================================================
+
+fila_leilao = []
+tarefa_leilao_atual = None
+leilao_ativo = {
+    "em_andamento": False,
+    "mensagem_painel": None,
+    "item_atual": None,
+    "maior_lance": 10,
+    "vencedor_id": None,
+    "vencedor_nome": None,
+}
 
 BOSSES = {
     "blood wizard": ("Blood Wizard", "18:10", None, "Devias (/pvp2)", "159, 32", "🧙‍♂️", 10),
@@ -143,7 +162,7 @@ async def migrar_ranking_para_ids(client):
         print("✅ Migração de ranking concluída e salva com sucesso!")
 
 # =========================================================
-# DATAS E TEMPO
+# AUXILIARES DE TEMPO E LIMPEZA DE MENSAGENS
 # =========================================================
 
 def formatar_tempo(segundos_totais):
@@ -179,6 +198,27 @@ async def obter_nome_membro_async(client, user_id_str):
             except Exception:
                 continue
     return user_id_str
+
+def verificar_se_e_staff(member):
+    if member.guild_permissions.administrator:
+        return True
+    for role in member.roles:
+        if role.name.lower() in ["staff", "administrador", "moderador", "adm"]:
+            return True
+    return False
+
+async def enviar_e_auto_limpar_se_ranking(canal, mensagem_usuario, texto_resposta, tempo=5):
+    resp = await canal.send(texto_resposta)
+    if canal.id == CANAL_RANKING_ID:
+        await asyncio.sleep(tempo)
+        try:
+            await mensagem_usuario.delete()
+        except Exception:
+            pass
+        try:
+            await resp.delete()
+        except Exception:
+            pass
 
 # =========================================================
 # EMBEDS
@@ -232,14 +272,12 @@ def criar_embed_agenda_detalhada(agora):
 
 async def criar_embed_ranking_async(client):
     agora_str = datetime.now(TIMEZONE).strftime('%H:%M:%S')
-    embed = discord.Embed(
-        title="🏆 RANKING GERAL ATUALIZADO DA GUILDA",
-        description=f"Placar geral acumulado de membros.\n\n🕒 **ÚLTIMA ATUALIZAÇÃO:** `{agora_str}`",
-        color=0xF1C40F,
-    )
     ranking_atual = estado.get("ranking", {})
+    
+    cabecalho = f"Placar geral acumulado de membros.\n\n🕒 **ÚLTIMA ATUALIZAÇÃO:** `{agora_str}`\n\n"
+    
     if not ranking_atual:
-        embed.add_field(name="📊 Placar Vazio", value="Ainda não há pontuações registadas.", inline=False)
+        descricao_final = cabecalho + "*Ainda não há pontuações registadas.*"
     else:
         ranking_ordenado = sorted(ranking_atual.items(), key=lambda item: item[1], reverse=True)
         linhas = []
@@ -257,15 +295,16 @@ async def criar_embed_ranking_async(client):
             
             linhas.append(f"{medalha} **{nome_exibicao}** — `{pontos} pts`")
         
-        bloco_atual = ""
-        for linha in linhas:
-            if len(bloco_atual) + len(linha) + 1 > 1024:
-                embed.add_field(name="🏅 Placar (continuação)", value=bloco_atual, inline=False)
-                bloco_atual = ""
-            bloco_atual += linha + "\n"
-        if bloco_atual:
-            embed.add_field(name="🏅 Placar Completo", value=bloco_atual, inline=False)
-    
+        lista_completa = "\n".join(linhas)
+        descricao_final = cabecalho + lista_completa
+        if len(descricao_final) > 4090:
+            descricao_final = descricao_final[:4087] + "..."
+
+    embed = discord.Embed(
+        title="🏆 RANKING GERAL ATUALIZADO DA GUILDA",
+        description=descricao_final,
+        color=0xF1C40F,
+    )
     embed.set_footer(text=f"Total de membros ranqueados: {len(ranking_atual)}")
     return embed
 
@@ -377,7 +416,7 @@ async def apagar_msg_temporaria(msg):
         pass
 
 # =========================================================
-# ATUALIZAÇÃO SEGURA DE CANAIS (COM ANTI-RATE LIMIT)
+# ATUALIZAÇÃO SEGURA DE CANAIS
 # =========================================================
 
 async def atualizar_ranking(forcar=False):
@@ -410,10 +449,15 @@ async def atualizar_ranking(forcar=False):
         if mensagem:
             await mensagem.edit(embed=embed)
         else:
-            async for msg in canal.history(limit=15):
+            async for msg in canal.history(limit=20):
                 if msg.author == bot.user and msg.embeds and "RANKING GERAL" in (msg.embeds[0].title or ""):
-                    mensagem = msg
-                    break
+                    if mensagem is None:
+                        mensagem = msg
+                    else:
+                        try:
+                            await msg.delete()
+                        except Exception:
+                            pass
             if mensagem:
                 await mensagem.edit(embed=embed)
             else:
@@ -531,17 +575,268 @@ async def fechar_lista_depois(mensagem, view_presenca, nome_boss, pontos, segund
         print(f"⚠️ Erro ao enviar painel final de participantes: {e}")
 
 # =========================================================
-# COMANDOS DE TEXTO E PAINEL DE CONTROLO
+# LÓGICA DO SISTEMA DE LEILÃO
+# =========================================================
+
+async def carregar_fila_do_drop_boys():
+    global fila_leilao
+    fila_leilao.clear()
+    
+    canal_drop = bot.get_channel(CANAL_DROP_BOYS_ID)
+    if not canal_drop:
+        try:
+            canal_drop = await bot.fetch_channel(CANAL_DROP_BOYS_ID)
+        except Exception:
+            return False
+
+    async for msg in canal_drop.history(limit=50, oldest_first=True):
+        if msg.attachments:
+            foto_url = msg.attachments[0].url
+            nome_item = msg.content.strip() if msg.content else "Item de Leilão"
+            fila_leilao.append({
+                "nome": nome_item,
+                "lance_inicial": 10,
+                "foto_url": foto_url
+            })
+    return True
+
+async def atualizar_painel_leilao():
+    if not leilao_ativo["em_andamento"] or not leilao_ativo["mensagem_painel"]:
+        return
+
+    item = leilao_ativo["item_atual"]
+    maior_lance = leilao_ativo["maior_lance"]
+    vencedor = leilao_ativo["vencedor_nome"] or "Nenhum (Ainda aberto!)"
+
+    embed = discord.Embed(
+        title=f"🔨 LEILÃO ATIVO: {item['nome']}",
+        description=(
+            f"💰 **Lance Atual:** `{maior_lance} pts`\n"
+            f"👑 **Maior Licitante Atual:** **{vencedor}**\n\n"
+            f"*Digite `!lance [valor]` no chat para dar o seu lance!*"
+        ),
+        color=0xE67E22
+    )
+    if item["foto_url"]:
+        embed.set_image(url=item["foto_url"])
+
+    try:
+        await leilao_ativo["mensagem_painel"].edit(embed=embed)
+    except Exception:
+        pass
+
+async def executar_proximo_item_leilao(canal):
+    global leilao_ativo, fila_leilao, tarefa_leilao_atual
+
+    if not leilao_ativo["em_andamento"]:
+        return
+
+    if not fila_leilao:
+        leilao_ativo["em_andamento"] = False
+        leilao_ativo["item_atual"] = None
+        if leilao_ativo["mensagem_painel"]:
+            try:
+                await leilao_ativo["mensagem_painel"].edit(view=None)
+            except Exception:
+                pass
+        await canal.send("🏁 **O leilão terminou!** Todos os itens do canal drop-boss foram leiloados.")
+        return
+
+    item_atual = fila_leilao.pop(0)
+    leilao_ativo["item_atual"] = item_atual
+    leilao_ativo["maior_lance"] = item_atual["lance_inicial"]
+    leilao_ativo["vencedor_id"] = None
+    leilao_ativo["vencedor_nome"] = None
+
+    embed = discord.Embed(
+        title=f"🔨 LEILÃO ATIVO: {item_atual['nome']}",
+        description=(
+            f"💰 **Lance Atual:** `{item_atual['lance_inicial']} pts` (Inicial)\n"
+            f"👑 **Maior Licitante Atual:** *Nenhum (Ainda aberto!)*\n\n"
+            f"*Digite `!lance [valor]` no chat para dar o seu lance!*"
+        ),
+        color=0xE67E22
+    )
+    if item_atual["foto_url"]:
+        embed.set_image(url=item_atual["foto_url"])
+
+    msg_painel = await canal.send(embed=embed)
+    leilao_ativo["mensagem_painel"] = msg_painel
+
+    try:
+        await asyncio.sleep(45)
+        if leilao_ativo["em_andamento"]:
+            await canal.send("⚠️ **ÚLTIMOS 15 SEGUNDOS!** Dou-lhe uma, dou-lhe duas...")
+        await asyncio.sleep(15)
+    except asyncio.CancelledError:
+        return
+
+    if not leilao_ativo["em_andamento"]:
+        return
+
+    vencedor_id = leilao_ativo["vencedor_id"]
+    vencedor_nome = leilao_ativo["vencedor_nome"]
+    maior_lance = leilao_ativo["maior_lance"]
+
+    if vencedor_id:
+        async with bot.lock:
+            ranking = estado.get("ranking", {})
+            saldo_atual = int(ranking.get(vencedor_id, 0))
+            novo_saldo = max(0, saldo_atual - maior_lance)
+            ranking[vencedor_id] = novo_saldo
+            estado["ranking"] = ranking
+            salvar_estado()
+
+        await canal.send(
+            f"🎉 **VENDIDO!** O item **{item_atual['nome']}** foi arrematado por **{vencedor_nome}** por **{maior_lance} pts**!\n"
+            f"📉 *Saldo descontado automaticamente do ranking (Novo saldo: `{novo_saldo} pts`).*"
+        )
+        await atualizar_ranking(forcar=True)
+    else:
+        await canal.send(f"❌ O item **{item_atual['nome']}** não teve lances e foi encerrado sem comprador.")
+
+    await asyncio.sleep(4)
+    if leilao_ativo["em_andamento"]:
+        tarefa_leilao_atual = asyncio.create_task(executar_proximo_item_leilao(canal))
+
+# =========================================================
+# COMANDOS DE TEXTO E EVENTOS
 # =========================================================
 
 @bot.event
 async def on_message(message):
-    global ultima_mensagem_lista
+    global ultima_mensagem_lista, aguardando_confirmacao_zerar, leilao_ativo, fila_leilao, tarefa_leilao_atual
     if message.author.bot:
         return
 
     conteudo = message.content.strip()
     conteudo_lower = conteudo.lower()
+
+    if CANAL_LEILAO_ID != 0 and message.channel.id == CANAL_LEILAO_ID:
+        if conteudo_lower in ["!iniciarleilao", "!encerrarleilao", "!recarregarfila", "!testeleilao"]:
+            if not verificar_se_e_staff(message.author):
+                await message.delete()
+                aviso = await message.channel.send(f"❌ **{message.author.display_name}**, apenas membros da **Staff** podem utilizar os comandos de leilão.")
+                await asyncio.sleep(5)
+                try:
+                    await aviso.delete()
+                except Exception:
+                    pass
+                return
+
+        # COMANDO DE TESTE PARA VER O LEILÃO A FUNCIONAR
+        if conteudo_lower == "!testeleilao":
+            if leilao_ativo["em_andamento"]:
+                await message.channel.send("⚠️ Já existe um leilão em andamento!")
+                return
+
+            fila_leilao.clear()
+            fila_leilao.append({
+                "nome": "🛡️ [TESTE] Asas S3 DL + Ignore",
+                "lance_inicial": 10,
+                "foto_url": "https://i.imgur.com/4A347Bq.png"  # Imagem de teste pública
+            })
+            leilao_ativo["em_andamento"] = True
+            await message.channel.send("🧪 **[MODO DE TESTE ATIVADO]** A iniciar leilão de teste...")
+            tarefa_leilao_atual = asyncio.create_task(executar_proximo_item_leilao(message.channel))
+            return
+
+        if conteudo_lower == "!iniciarleilao":
+            if leilao_ativo["em_andamento"]:
+                await message.channel.send("⚠️ Já existe um leilão em andamento!")
+                return
+            
+            await message.channel.send("📥 A puxar itens e fotos do canal **drop-boss**...")
+            sucesso = await carregar_fila_do_drop_boys()
+            if not sucesso or not fila_leilao:
+                await message.channel.send("❌ Não foram encontrados itens com fotos no canal **drop-boss**.")
+                return
+
+            leilao_ativo["em_andamento"] = True
+            await message.channel.send(f"🏛️ **LEILÃO DA GUILDA INICIADO!** ({len(fila_leilao)} itens carregados do drop-boss).")
+            tarefa_leilao_atual = asyncio.create_task(executar_proximo_item_leilao(message.channel))
+            return
+
+        if conteudo_lower == "!encerrarleilao":
+            if not leilao_ativo["em_andamento"]:
+                await message.channel.send("⚠️ Não há nenhum leilão ativo no momento.")
+                return
+
+            leilao_ativo["em_andamento"] = False
+            leilao_ativo["item_atual"] = None
+            fila_leilao.clear()
+            if tarefa_leilao_atual and not tarefa_leilao_atual.done():
+                tarefa_leilao_atual.cancel()
+            await message.channel.send("🛑 **LEILÃO ENCERRADO MANUALMENTE!**")
+            return
+
+        if conteudo_lower.startswith("!lance"):
+            if not leilao_ativo["em_andamento"]:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                return
+
+            partes = conteudo.split()
+            if len(partes) < 2:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                return
+
+            try:
+                valor_lance = int(partes[1])
+            except ValueError:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                return
+
+            user_id_str = str(message.author.id)
+            usuario_nome = message.author.display_name
+            ranking = estado.get("ranking", {})
+            pontos_atuais = int(ranking.get(user_id_str, ranking.get(usuario_nome, 0)))
+
+            if pontos_atuais < valor_lance:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                msg_aviso = await message.channel.send(f"❌ **{usuario_nome}**, saldo insuficiente! Seus pontos: `{pontos_atuais} pts`.")
+                await asyncio.sleep(6)
+                try:
+                    await msg_aviso.delete()
+                except Exception:
+                    pass
+                return
+
+            if valor_lance <= leilao_ativo["maior_lance"]:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                msg_aviso = await message.channel.send(f"⚠️ O lance deve ser maior que o atual (`{leilao_ativo['maior_lance']} pts`).")
+                await asyncio.sleep(6)
+                try:
+                    await msg_aviso.delete()
+                except Exception:
+                    pass
+                return
+
+            leilao_ativo["maior_lance"] = valor_lance
+            leilao_ativo["vencedor_id"] = user_id_str
+            leilao_ativo["vencedor_nome"] = usuario_nome
+
+            try:
+                await message.delete()
+            except Exception:
+                pass
+
+            await atualizar_painel_leilao()
+            return
 
     if conteudo_lower == "!status":
         uptime_segundos = int(time.time() - tempo_inicio_bot)
@@ -564,7 +859,7 @@ async def on_message(message):
     if conteudo_lower == "!comandos":
         embed_cmd = discord.Embed(
             title="📜 PAINEL DE GESTÃO - LISTA DE COMANDOS",
-            description="Aqui estão todos os comandos administrativos disponíveis:",
+            description="Aqui estão todos os comandos disponíveis:",
             color=0xE67E22
         )
         embed_cmd.add_field(name="⚙️ Controlo & Testes", value=(
@@ -573,21 +868,50 @@ async def on_message(message):
             "`!ping` - Testa a latência de resposta do bot\n"
             "`!testeboss [nome]` - Força um teste abrindo a lista de um boss"
         ), inline=False)
-        embed_cmd.add_field(name="🏆 Gestão de Pontos", value=(
+        embed_cmd.add_field(name="🏆 Gestão de Pontos & Ranking", value=(
             "`!addpontos [Membro] [Qtde]` - Adiciona pontos a um membro\n"
-            "`!tirarpontos [Membro] [Qtde]` - Remove pontos de um membro"
+            "`!tirarpontos [Membro] [Qtde]` - Remove pontos de um membro\n"
+            "`!zerarranking` - Zera todo o ranking da guilda (pede confirmação)"
         ), inline=False)
         embed_cmd.add_field(name="⏰ Gestão de Listas", value=(
             "`!abrirlista [boss]` - Abre manualmente a lista de um boss\n"
             "`!fechar` - Fecha a lista de presença ativa"
         ), inline=False)
+        embed_cmd.add_field(name="🔨 Sistema de Leilão (Na Sala leilão)", value=(
+            "`!testeleilao` - Inicia um leilão de teste com item simulado (Apenas Staff)\n"
+            "`!iniciarleilao` - Puxa itens/fotos do drop-boss e inicia (Apenas Staff)\n"
+            "`!encerrarleilao` - Encerra o leilão ativo (Apenas Staff)\n"
+            "`!lance [valor]` - Envia um lance para cobrir a oferta atual"
+        ), inline=False)
         await message.channel.send(embed=embed_cmd)
+        return
+
+    if conteudo_lower == "!zerarranking":
+        aguardando_confirmacao_zerar = True
+        await enviar_e_auto_limpar_se_ranking(
+            message.channel,
+            message,
+            "⚠️ **ATENÇÃO!** Tem certeza que deseja **ZERAR TODOS OS PONTOS** do ranking geral?\nSe tiver certeza, digite **`!confirmarzerar`** para apagar tudo permanentemente.",
+            tempo=15
+        )
+        return
+
+    if conteudo_lower == "!confirmarzerar":
+        if not aguardando_confirmacao_zerar:
+            await enviar_e_auto_limpar_se_ranking(message.channel, message, "⚠️ Nenhum pedido de zerar ranking ativo. Digite `!zerarranking` primeiro.")
+            return
+        aguardando_confirmacao_zerar = False
+        async with bot.lock:
+            estado["ranking"] = {}
+            salvar_estado()
+        await atualizar_ranking(forcar=True)
+        await enviar_e_auto_limpar_se_ranking(message.channel, message, "💥 **RANKING ZERADO COM SUCESSO!** Todos os membros voltaram para `0 pontos`.")
         return
 
     if conteudo_lower == "!forcaratualizar":
         await atualizar_ranking(forcar=True)
         await garantir_painel_consulta()
-        await message.channel.send("🔄 Painéis, ranking e central de consulta atualizados manualmente com sucesso!")
+        await enviar_e_auto_limpar_se_ranking(message.channel, message, "🔄 Painéis, ranking e central de consulta atualizados manualmente com sucesso!")
         return
 
     if conteudo_lower == "!ping":
@@ -655,14 +979,14 @@ async def on_message(message):
     if conteudo_lower.startswith("!addpontos"):
         partes = conteudo.split(maxsplit=2)
         if len(partes) < 3:
-            await message.channel.send("⚠️ Uso correto: `!addpontos NomeDoMembro 10`")
+            await enviar_e_auto_limpar_se_ranking(message.channel, message, "⚠️ Uso correto: `!addpontos NomeDoMembro 10`")
             return
 
         membro_alvo_str = partes[1].strip()
         try:
             pontos_a_adicionar = int(partes[2])
         except ValueError:
-            await message.channel.send("❌ A quantidade de pontos deve ser um número inteiro.")
+            await enviar_e_auto_limpar_se_ranking(message.channel, message, "❌ A quantidade de pontos deve ser um número inteiro.")
             return
 
         alvo_chave = None
@@ -683,20 +1007,24 @@ async def on_message(message):
             salvar_estado()
 
         await atualizar_ranking(forcar=True)
-        await message.channel.send(f"✅ Adicionados **{pontos_a_adicionar} pts** para **{membro_alvo_str}**! Total atual: `{ranking[alvo_chave]} pts`.")
+        await enviar_e_auto_limpar_se_ranking(
+            message.channel,
+            message,
+            f"✅ Adicionados **{pontos_a_adicionar} pts** para **{membro_alvo_str}**! Total atual: `{ranking[alvo_chave]} pts`."
+        )
         return
 
     if conteudo_lower.startswith("!tirarpontos"):
         partes = conteudo.split(maxsplit=2)
         if len(partes) < 3:
-            await message.channel.send("⚠️ Uso correto: `!tirarpontos NomeDoMembro 10`")
+            await enviar_e_auto_limpar_se_ranking(message.channel, message, "⚠️ Uso correto: `!tirarpontos NomeDoMembro 10`")
             return
 
         membro_alvo_str = partes[1].strip()
         try:
             pontos_a_remover = int(partes[2])
         except ValueError:
-            await message.channel.send("❌ A quantidade de pontos deve ser um número inteiro.")
+            await enviar_e_auto_limpar_se_ranking(message.channel, message, "❌ A quantidade de pontos deve ser um número inteiro.")
             return
 
         alvo_chave = None
@@ -718,7 +1046,11 @@ async def on_message(message):
             salvar_estado()
 
         await atualizar_ranking(forcar=True)
-        await message.channel.send(f"🗑️ Removidos **{pontos_a_remover} pts** de **{membro_alvo_str}**! Total atual: `{novo_total} pts`.")
+        await enviar_e_auto_limpar_se_ranking(
+            message.channel,
+            message,
+            f"🗑️ Removidos **{pontos_a_remover} pts** de **{membro_alvo_str}**! Total atual: `{novo_total} pts`."
+        )
         return
 
 # =========================================================
