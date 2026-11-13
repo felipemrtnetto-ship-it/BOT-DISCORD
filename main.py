@@ -181,4 +181,132 @@ def criar_embed_ranking():
         ranking_ordenado = sorted(ranking_atual.items(), key=lambda item: item[1], reverse=True)
         linhas = []
         for posicao, (membro, pontos) in enumerate(ranking_ordenado, start=1):
-            medalha = "🥇" if posicao == 1 else "🥈" if posicao == 2 else "🥉" if posicao ==
+            if posicao == 1:
+                medalha = "🥇"
+            elif posicao == 2:
+                medalha = "🥈"
+            elif posicao == 3:
+                medalha = "🥉"
+            else:
+                medalha = f"`#{posicao}`"
+            
+            linhas.append(f"{medalha} **{membro}** — `{pontos} pts`")
+        
+        bloco_atual = ""
+        for linha in linhas:
+            if len(bloco_atual) + len(linha) + 1 > 1024:
+                embed.add_field(name="🏅 Placar (continuação)", value=bloco_atual, inline=False)
+                bloco_atual = ""
+            bloco_atual += linha + "\n"
+        if bloco_atual:
+            embed.add_field(name="🏅 Placar Completo", value=bloco_atual, inline=False)
+    embed.set_footer(text=f"Atualizado automaticamente • Total de membros: {len(ranking_atual)}")
+    return embed
+
+def criar_embed_consulta():
+    embed = discord.Embed(
+        title="🛡️ BOT-TERROR | CENTRAL DE CONSULTA DE PONTOS",
+        description="Clique no botão abaixo para verificar a sua pontuação e posição atual no ranking instantaneamente!\n\n⭐ **Consulta Direta:** A resposta aparece apenas para você.",
+        color=0x2E8B57
+    )
+    return embed
+
+# =========================================================
+# VIEWS INTERATIVAS
+# =========================================================
+
+class ViewConsultaPontos(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="⭐ Meus Pontos", style=discord.ButtonStyle.blurple, custom_id="btn_meus_pontos")
+    async def meus_pontos(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        usuario = interaction.user.display_name
+        ranking = estado.get("ranking", {})
+        ranking_ordenado = sorted(ranking.items(), key=lambda item: item[1], reverse=True)
+        
+        pontos_usuario = ranking.get(usuario, 0)
+        posicao_usuario = None
+        
+        for idx, (membro, pts) in enumerate(ranking_ordenado, start=1):
+            if membro == usuario:
+                posicao_usuario = idx
+                break
+
+        if posicao_usuario:
+            resposta = f"📊 **Consulta de Pontuação**\n\n👤 **Membro:** {usuario}\n🏆 **Pontos Atuais:** `{pontos_usuario} pts`\n🏅 **Posição no Ranking:** `#{posicao_usuario}`"
+        else:
+            resposta = f"📊 **Consulta de Pontuação**\n\n👤 **Membro:** {usuario}\n🏆 **Pontos Atuais:** `0 pts`\n🏅 **Posição no Ranking:** `Não ranqueado`"
+
+        await interaction.followup.send(resposta, ephemeral=True)
+
+
+class ViewPresenca(discord.ui.View):
+    def __init__(self, nome_boss, pontos):
+        super().__init__(timeout=900)
+        self.nome_boss = nome_boss
+        self.pontos = pontos
+        self.participantes = set()
+
+    @discord.ui.button(label="✅ Registrar Presença", style=discord.ButtonStyle.green, custom_id="registrar_presenca")
+    async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        usuario = interaction.user.display_name
+        if usuario in self.participantes:
+            await interaction.followup.send("⚠️ Você já registou presença neste boss!", ephemeral=True)
+            return
+
+        self.participantes.add(usuario)
+
+        async with lock:
+            ranking = estado.get("ranking", {})
+            ranking[usuario] = int(ranking.get(usuario, 0)) + self.pontos
+            estado["ranking"] = ranking
+            salvar_estado()
+
+        nomes = "\n".join(f"• {p}" for p in sorted(self.participantes)) or "Nenhum participante ainda."
+        if len(nomes) > 1024:
+            nomes = nomes[:1021] + "..."
+
+        try:
+            embed = interaction.message.embeds[0]
+            embed.clear_fields()
+            embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
+            embed.add_field(name=f"👥 Participantes ({len(self.participantes)})", value=nomes, inline=False)
+
+            await interaction.message.edit(embed=embed, view=self)
+            await atualizar_ranking()
+
+            await interaction.followup.send(f"🎉 Presença registada com sucesso! +{self.pontos} pontos.", ephemeral=True)
+        except Exception as erro:
+            print(f"⚠️ Erro ao atualizar presença: {erro}")
+            await interaction.followup.send("Pontuação registada, mas houve uma falha ao atualizar o painel visual.", ephemeral=True)
+
+# =========================================================
+# ATUALIZAÇÃO DE CANAIS
+# =========================================================
+
+async def atualizar_ranking():
+    canal = bot.get_channel(CANAL_RANKING_ID)
+    if not canal:
+        try:
+            canal = await bot.fetch_channel(CANAL_RANKING_ID)
+        except Exception:
+            return
+
+    embed = criar_embed_ranking()
+    mensagem_id = estado.get("id_mensagem_ranking")
+    mensagem = None
+
+    if mensagem_id:
+        try:
+            mensagem = await canal.fetch_message(mensagem_id)
+        except Exception:
+            mensagem = None
+
+    try:
+        if mensagem:
+            await mensagem.edit(
