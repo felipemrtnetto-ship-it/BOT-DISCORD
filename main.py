@@ -9,7 +9,7 @@ import os
 print("🔄 A iniciar o script do bot...")
 
 # =========================================================
-# CONFIGURAÇÕES DE CANAIS
+# CONFIGURAÇÕES DE CANAIS EXATOS
 # =========================================================
 
 TOKEN = os.getenv("TOKEN") or os.getenv("DISCORD_TOKEN")
@@ -17,10 +17,11 @@ TOKEN = os.getenv("TOKEN") or os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise ValueError("❌ TOKEN ou DISCORD_TOKEN não configurado nas variáveis de ambiente do Railway.")
 
-CANAL_PAINEL_ID = 1570446068490043442   # Canal exclusivo do Painel de Horários
-CANAL_ALERTAS_ID = 1561134289595142235  # Canal exclusivo para Alertas e Abertura de Listas (!abrirlista)
-CANAL_RANKING_ID = 1570234809719070842   # Substitua pelo ID EXATO do canal exclusivo do Ranking Geral
-CANAL_CONSULTA_ID = 1570413285214527618  # Substitua pelo ID EXATO do canal exclusivo de Consulta de Pontos
+CANAL_ALERTAS_ID = 1570454121922822265  # Canal: ⚠️-alerta-dos-boss (Alertas de 10 min)
+CANAL_PAINEL_ID = 1570446068490043442   # Canal: ⏰ horários-boss (Painel fixo de horários)
+CANAL_PRESENCA_ID = 1561134289595142235 # Canal: 🧙‍♂️ presença-boss (Listas automáticas de 5 min e !abrirlista)
+CANAL_RANKING_ID = 1570234809719070842  # Canal: 💯 ranking-boss (Ranking Geral)
+CANAL_CONSULTA_ID = 1570446068490043442 # Canal: 🔍 consultar-pontos (Central "Meus Pontos")
 
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
 ARQUIVO_ESTADO = "estado.json"
@@ -32,7 +33,8 @@ intents.guilds = True
 bot = discord.Client(intents=intents)
 
 lock = asyncio.Lock()
-alertas_enviados_memoria = set()
+alertas_10min_memoria = set()
+listas_5min_memoria = set()
 ultima_mensagem_lista = None
 
 BOSSES = {
@@ -334,7 +336,39 @@ async def garantir_painel_consulta():
         print(f"⚠️ Erro no painel de consulta: {erro}")
 
 # =========================================================
-# COMANDOS DE TEXTO
+# ABERTURA AUTOMÁTICA DA LISTA DE PRESENÇA (5 MIN)
+# =========================================================
+
+async def abrir_lista_automatica(dados_boss):
+    global ultima_mensagem_lista
+    canal = bot.get_channel(CANAL_PRESENCA_ID)
+    if not canal:
+        return
+
+    nome, horario, dias, mapa, coords, emoji, pontos = dados_boss
+    embed = discord.Embed(
+        title=f"🔥 LISTA ABERTA: {emoji} {nome} 🔥",
+        description=f"⏰ **Horário:** {horario}\n📍 **Mapa:** {mapa} (`{coords}`)\n🏆 **Vale:** {pontos} pontos\n\n*Clique no botão abaixo para registrar a sua presença!*",
+        color=0x2ECC71,
+    )
+    embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
+    embed.add_field(name="👥 Participantes (0)", value="Nenhum participante ainda.", inline=False)
+
+    view = ViewPresenca(nome, pontos)
+    try:
+        mensagem = await canal.send(
+            content="@everyone",
+            embed=embed,
+            view=view,
+            allowed_mentions=discord.AllowedMentions(everyone=True),
+        )
+        ultima_mensagem_lista = mensagem
+        asyncio.create_task(apagar_mensagem_depois(mensagem, 900))
+    except Exception as erro:
+        print(f"❌ Erro ao abrir lista automática: {erro}")
+
+# =========================================================
+# COMANDOS DE TEXTO (!abrirlista e !fechar)
 # =========================================================
 
 @bot.event
@@ -381,27 +415,7 @@ async def on_message(message):
             await message.channel.send("❌ Boss não encontrado! Verifique o nome.")
             return
 
-        nome, horario, dias, mapa, coords, emoji, pontos = boss_encontrado
-        embed = discord.Embed(
-            title=f"🔥 LISTA ABERTA: {emoji} {nome} 🔥",
-            description=f"⏰ **Horário:** {horario}\n📍 **Mapa:** {mapa} (`{coords}`)\n🏆 **Vale:** {pontos} pontos\n\n*Clique no botão abaixo para registrar a sua presença!*",
-            color=0x2ECC71,
-        )
-        embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
-        embed.add_field(name="👥 Participantes (0)", value="Nenhum participante ainda.", inline=False)
-
-        view = ViewPresenca(nome, pontos)
-        try:
-            mensagem = await message.channel.send(
-                content="@everyone",
-                embed=embed,
-                view=view,
-                allowed_mentions=discord.AllowedMentions(everyone=True),
-            )
-            ultima_mensagem_lista = mensagem
-            asyncio.create_task(apagar_mensagem_depois(mensagem, 900))
-        except Exception as erro:
-            await message.channel.send(f"❌ Erro ao abrir lista: {erro}")
+        await abrir_lista_automatica(boss_encontrado)
 
 async def apagar_mensagem_depois(mensagem, segundos):
     global ultima_mensagem_lista
@@ -414,7 +428,7 @@ async def apagar_mensagem_depois(mensagem, segundos):
         ultima_mensagem_lista = None
 
 # =========================================================
-# LOOP PRINCIPAL (VERIFICAÇÃO DE 10 MINUTOS EXATOS)
+# LOOP PRINCIPAL
 # =========================================================
 
 @tasks.loop(seconds=5)
@@ -422,7 +436,7 @@ async def verificar_boss():
     async with lock:
         agora = datetime.now(TIMEZONE)
 
-        # 1. Painel de Horários
+        # 1. Atualizar Painel no canal `horários-boss`
         canal_painel = bot.get_channel(CANAL_PAINEL_ID)
         if canal_painel:
             embed_painel = criar_embed_agenda_detalhada(agora)
@@ -450,52 +464,57 @@ async def verificar_boss():
             except Exception as e:
                 print(f"⚠️ Erro no painel: {e}")
 
-        # 2. Ranking Geral
+        # 2. Atualizar Ranking no canal `ranking-boss`
         await atualizar_ranking()
 
-        # 3. Central de Consulta Fixa ("Meus Pontos")
+        # 3. Garantir Painel de Consulta no canal `consultar-pontos`
         await garantir_painel_consulta()
 
-        # 4. Alerta de 10 Minutos estritos
+        # 4. Alerta de 10 min no canal `-alerta-dos-boss` e Abertura Automática da Lista aos 5 min no canal `presença-boss`
         canal_alertas = bot.get_channel(CANAL_ALERTAS_ID)
-        if canal_alertas:
-            for chave, dados_boss in BOSSES.items():
-                nome, horario, dias, mapa, coords, emoji, pontos = dados_boss
-                proxima_ocorrencia = proxima_data_boss(dados_boss, agora)
-                if proxima_ocorrencia is None:
-                    continue
+        
+        for chave, dados_boss in BOSSES.items():
+            nome, horario, dias, mapa, coords, emoji, pontos = dados_boss
+            proxima_ocorrencia = proxima_data_boss(dados_boss, agora)
+            if proxima_ocorrencia is None:
+                continue
 
-                diferenca = (proxima_ocorrencia - agora).total_seconds()
-                data_hoje = agora.strftime('%Y-%m-%d')
-                chave_alerta = f"{nome}_{horario}_{data_hoje}_10min"
+            diferenca = (proxima_ocorrencia - agora).total_seconds()
+            data_hoje = agora.strftime('%Y-%m-%d')
+            
+            chave_alerta_10m = f"{nome}_{horario}_{data_hoje}_10min"
+            chave_lista_5m = f"{nome}_{horario}_{data_hoje}_5min_lista"
 
-                # Dispara estritamente quando faltarem entre 590 e 600 segundos (~10 min)
-                if 590 <= diferenca <= 600:
-                    if chave_alerta in alertas_enviados_memoria:
-                        continue
-
-                    alertas_enviados_memoria.add(chave_alerta)
-
-                    embed_alerta = discord.Embed(
-                        title=f"🚨 BOSS EM 10 MINUTOS: {emoji} {nome} 🚨",
-                        description=(
-                            f"⏰ **Horário:** {horario}\n"
-                            f"📍 **Mapa:** {mapa}\n"
-                            f"📌 **Coordenadas:** `{coords}`\n"
-                            f"🏆 **Pontuação:** `{pontos} pontos`\n\n"
-                            "**Prepareem-se! O boss está prestes a nascer.**"
-                        ),
-                        color=0xE74C3C,
-                    )
-
-                    try:
-                        await canal_alertas.send(
-                            content="@everyone",
-                            embed=embed_alerta,
-                            allowed_mentions=discord.AllowedMentions(everyone=True),
+            # Alerta de 10 minutos exatos no canal de alertas (`-alerta-dos-boss`)
+            if 590 <= diferenca <= 600:
+                if chave_alerta_10m not in alertas_10min_memoria:
+                    alertas_10min_memoria.add(chave_alerta_10m)
+                    if canal_alertas:
+                        embed_alerta = discord.Embed(
+                            title=f"🚨 BOSS EM 10 MINUTOS: {emoji} {nome} 🚨",
+                            description=(
+                                f"⏰ **Horário:** {horario}\n"
+                                f"📍 **Mapa:** {mapa}\n"
+                                f"📌 **Coordenadas:** `{coords}`\n"
+                                f"🏆 **Pontuação:** `{pontos} pontos`\n\n"
+                                "**Preparem-se! O boss está prestes a nascer.**"
+                            ),
+                            color=0xE74C3C,
                         )
-                    except Exception as erro:
-                        print(f"⚠️ Erro ao enviar alerta de 10 min: {erro}")
+                        try:
+                            await canal_alertas.send(
+                                content="@everyone",
+                                embed=embed_alerta,
+                                allowed_mentions=discord.AllowedMentions(everyone=True),
+                            )
+                        except Exception as erro:
+                            print(f"⚠️ Erro no alerta de 10 min: {erro}")
+
+            # Abertura automática da lista de presença aos 5 minutos exatos no canal `presença-boss`
+            if 290 <= diferenca <= 300:
+                if chave_lista_5m not in listas_5min_memoria:
+                    listas_5min_memoria.add(chave_lista_5m)
+                    await abrir_lista_automatica(dados_boss)
 
 @bot.event
 async def on_ready():
