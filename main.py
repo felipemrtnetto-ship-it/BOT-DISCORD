@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import json
 import os
 
-print("🔄 A iniciar o script corrigido do bot...")
+print("🔄 A iniciar o script unificado do bot com suporte a volume...")
 
 # =========================================================
 # CONFIGURAÇÕES DE CANAIS EXATOS
@@ -17,14 +17,17 @@ TOKEN = os.getenv("TOKEN") or os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise ValueError("❌ TOKEN ou DISCORD_TOKEN não configurado nas variáveis de ambiente do Railway.")
 
-CANAL_ALERTAS_ID = 1570454121922822265  # Canal: ⚠️-alerta-dos-boss (Alertas de 10 min)
-CANAL_PAINEL_ID = 1570446068490043442   # Canal: ⏰ horários-boss (Painel fixo de horários)
-CANAL_PRESENCA_ID = 1561134289595142235 # Canal: 🧙‍♂️ presença-boss (Listas automáticas de 5 min e !abrirlista)
-CANAL_RANKING_ID = 1570234809719070842  # Canal: 💯 ranking-boss (Ranking Geral)
-CANAL_CONSULTA_ID = 1570413285214527618 # Canal: 🔍 consultar-pontos (Central "Meus Pontos")
+CANAL_ALERTAS_ID = 1570454121922822265  # Canal: ⚠️-alerta-dos-boss
+CANAL_PAINEL_ID = 1570446068490043442   # Canal: ⏰ horários-boss
+CANAL_PRESENCA_ID = 1561134289595142235 # Canal: 🧙‍♂️ presença-boss
+CANAL_RANKING_ID = 1570234809719070842  # Canal: 💯 ranking-boss
+CANAL_CONSULTA_ID = 1570446068490043442 # Canal: 🔍 consultar-pontos
 
 TIMEZONE = pytz.timezone("America/Sao_Paulo")
-ARQUIVO_ESTADO = "estado.json"
+
+# Garante que o estado.json é lido/gravado na pasta persistente do volume
+DIRETORIO_ATUAL = os.path.dirname(os.path.abspath(__file__))
+ARQUIVO_ESTADO = os.path.join(DIRETORIO_ATUAL, "estado.json")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -467,7 +470,6 @@ async def verificar_boss():
                 if msg_painel:
                     await msg_painel.edit(embed=embed_painel)
                 else:
-                    # Tenta encontrar a mensagem anterior do bot se houver
                     async for m in canal_painel.history(limit=15):
                         if m.author == bot.user and m.embeds and "HORÁRIOS DE BOSSES" in (m.embeds[0].title or ""):
                             msg_painel = m
