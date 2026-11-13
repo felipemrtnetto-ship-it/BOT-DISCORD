@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import json
 import os
 
-print("🔄 A iniciar o script unificado do bot com gestão manual...")
+print("🔄 A iniciar o script otimizado do bot (sem rate limit)...")
 
 # =========================================================
 # CONFIGURAÇÕES DE CANAIS EXATOS
@@ -444,7 +444,6 @@ async def on_message(message):
         await abrir_lista_automatica(boss_encontrado)
         return
 
-    # COMANDO MANUAL: !addpontos [Nome do Membro] [Quantidade]
     if conteudo_lower.startswith("!addpontos"):
         partes = conteudo.split(maxsplit=2)
         if len(partes) < 3:
@@ -460,7 +459,6 @@ async def on_message(message):
 
         async with lock:
             ranking = estado.get("ranking", {})
-            # Se mencionou alguém (@user), pega o display name se possível ou usa o texto
             if message.mentions:
                 membro_alvo = message.mentions[0].display_name
             
@@ -473,7 +471,6 @@ async def on_message(message):
         await message.channel.send(f"✅ Adicionados **{pontos_a_adicionar} pts** para **{membro_alvo}**! Total atual: `{ranking[membro_alvo]} pts`.")
         return
 
-    # COMANDO MANUAL: !tirarpontos [Nome do Membro] [Quantidade]
     if conteudo_lower.startswith("!tirarpontos"):
         partes = conteudo.split(maxsplit=2)
         if len(partes) < 3:
@@ -504,7 +501,7 @@ async def on_message(message):
 
 async def apagar_mensagem_depois(mensagem, segundos):
     global ultima_mensagem_lista
-    await asyncio.sleep(segundos)
+    asyncio.sleep(segundos)
     try:
         await mensagem.delete()
     except Exception:
@@ -513,10 +510,10 @@ async def apagar_mensagem_depois(mensagem, segundos):
         ultima_mensagem_lista = None
 
 # =========================================================
-# LOOP PRINCIPAL UNIFICADO
+# LOOP PRINCIPAL UNIFICADO (INTERVALO DE 30 SEGUNDOS PARA EVITAR RATE LIMIT)
 # =========================================================
 
-@tasks.loop(seconds=5)
+@tasks.loop(seconds=30)
 async def verificar_boss():
     async with lock:
         agora = datetime.now(TIMEZONE)
@@ -580,7 +577,7 @@ async def verificar_boss():
             chave_lista_5m = f"{nome}_{horario}_{data_hoje}_5min_lista"
 
             # Alerta de 10 minutos exatos no canal de alertas (`⚠️-alerta-dos-boss`)
-            if 590 <= diferenca <= 600:
+            if 570 <= diferenca <= 600:
                 if chave_alerta_10m not in alertas_10min_memoria:
                     alertas_10min_memoria.add(chave_alerta_10m)
                     if canal_alertas:
@@ -605,7 +602,7 @@ async def verificar_boss():
                             print(f"⚠️ Erro no alerta de 10 min: {erro}")
 
             # Abertura automática da lista de presença aos 5 minutos exatos no canal `presença-boss`
-            if 290 <= diferenca <= 300:
+            if 270 <= diferenca <= 300:
                 if chave_lista_5m not in listas_5min_memoria:
                     listas_5min_memoria.add(chave_lista_5m)
                     await abrir_lista_automatica(dados_boss)
