@@ -9,7 +9,7 @@ import os
 print("🔄 A iniciar o script do bot...")
 
 # =========================================================
-# CONFIGURAÇÕES DE CANAIS (COLOQUE OS IDs CORRETOS DE CADA CANAL AQUI)
+# CONFIGURAÇÕES DE CANAIS
 # =========================================================
 
 TOKEN = os.getenv("TOKEN") or os.getenv("DISCORD_TOKEN")
@@ -414,7 +414,7 @@ async def apagar_mensagem_depois(mensagem, segundos):
         ultima_mensagem_lista = None
 
 # =========================================================
-# LOOP PRINCIPAL
+# LOOP PRINCIPAL (VERIFICAÇÃO DE 10 MINUTOS EXATOS)
 # =========================================================
 
 @tasks.loop(seconds=5)
@@ -455,6 +455,47 @@ async def verificar_boss():
 
         # 3. Central de Consulta Fixa ("Meus Pontos")
         await garantir_painel_consulta()
+
+        # 4. Alerta de 10 Minutos estritos
+        canal_alertas = bot.get_channel(CANAL_ALERTAS_ID)
+        if canal_alertas:
+            for chave, dados_boss in BOSSES.items():
+                nome, horario, dias, mapa, coords, emoji, pontos = dados_boss
+                proxima_ocorrencia = proxima_data_boss(dados_boss, agora)
+                if proxima_ocorrencia is None:
+                    continue
+
+                diferenca = (proxima_ocorrencia - agora).total_seconds()
+                data_hoje = agora.strftime('%Y-%m-%d')
+                chave_alerta = f"{nome}_{horario}_{data_hoje}_10min"
+
+                # Dispara estritamente quando faltarem entre 590 e 600 segundos (~10 min)
+                if 590 <= diferenca <= 600:
+                    if chave_alerta in alertas_enviados_memoria:
+                        continue
+
+                    alertas_enviados_memoria.add(chave_alerta)
+
+                    embed_alerta = discord.Embed(
+                        title=f"🚨 BOSS EM 10 MINUTOS: {emoji} {nome} 🚨",
+                        description=(
+                            f"⏰ **Horário:** {horario}\n"
+                            f"📍 **Mapa:** {mapa}\n"
+                            f"📌 **Coordenadas:** `{coords}`\n"
+                            f"🏆 **Pontuação:** `{pontos} pontos`\n\n"
+                            "**Prepareem-se! O boss está prestes a nascer.**"
+                        ),
+                        color=0xE74C3C,
+                    )
+
+                    try:
+                        await canal_alertas.send(
+                            content="@everyone",
+                            embed=embed_alerta,
+                            allowed_mentions=discord.AllowedMentions(everyone=True),
+                        )
+                    except Exception as erro:
+                        print(f"⚠️ Erro ao enviar alerta de 10 min: {erro}")
 
 @bot.event
 async def on_ready():
