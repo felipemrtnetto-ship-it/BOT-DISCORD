@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import json
 import os
 
-print("🔄 A iniciar o script do bot...")
+print("🔄 A iniciar o script corrigido do bot...")
 
 # =========================================================
 # CONFIGURAÇÕES DE CANAIS EXATOS
@@ -40,8 +40,10 @@ ultima_mensagem_lista = None
 BOSSES = {
     "blood wizard": ("Blood Wizard", "18:10", None, "Devias (/pvp2)", "159, 32", "🧙‍♂️", 10),
     "crusher skeleton": ("Crusher Skeleton", "19:05", None, "Lorencia", "Spawn aleatório", "💀", 15),
+    "necromancer": ("Necromancer", "19:40", None, "Elbeland 2 (/devias4)", "29, 39", "🔮", 15),
     "selupan": ("Selupan", "20:10", None, "Raklion (após a ponte, /pvp4)", "174, 2027", "🕷️", 15),
     "galia black": ("Galia Black", "20:30", None, "Lost Tower 1 (à esquerda do /move)", "166, 77", "🦇", 15),
+    "skull reaper": ("Skull Reaper", "20:50", None, "Dungeon 1 (à esquerda do /move)", "92, 237", "⚔️", 15),
     "gwyn": ("Gwyn, o Senhor das Cinzas", "22:10", None, "Dungeon 3", "25, 72", "🔥", 20),
     "hellmaine": ("Hellmaine", "22:30", None, "Aida (/hellmaine)", "115, 100", "🐺", 25),
     "balgass": ("Balgass", "23:00", [2, 5], "Crywolf Fortress", "112, 80 (Somente quartas e sábados)", "👑", 50),
@@ -50,7 +52,7 @@ BOSSES = {
 }
 
 # =========================================================
-# ESTADO E PERSISTÊNCIA
+# ESTADO E PERSISTÊNCIA SEGURA
 # =========================================================
 
 def estado_padrao():
@@ -118,6 +120,7 @@ def proxima_data_boss(dados_boss, agora):
 # =========================================================
 
 def criar_embed_agenda_detalhada(agora):
+    weekday_atual = agora.weekday()
     embed = discord.Embed(
         title="🛡️ HORÁRIOS DE BOSSES E PONTUAÇÃO",
         description="━━━━━━━━━━━━━━━━━━━━",
@@ -126,12 +129,22 @@ def criar_embed_agenda_detalhada(agora):
     encontrou_algum = False
     for chave, dados_boss in BOSSES.items():
         nome, horario, dias, mapa, coords, emoji, pontos = dados_boss
+        if dias is not None and weekday_atual not in dias:
+            continue
+
         proxima_ocorrencia = proxima_data_boss(dados_boss, agora)
         if proxima_ocorrencia is None:
             continue
         diferenca = (proxima_ocorrencia - agora).total_seconds()
         tempo_formatado = formatar_tempo(diferenca)
-        status_icone = "🔥" if diferenca <= 600 else "⏳"
+        
+        if diferenca <= 600:
+            status_icone = "🔥"
+        elif diferenca <= 1800:
+            status_icone = "⚠️"
+        else:
+            status_icone = "⏳"
+
         dia_texto = f"📅 **Data:** {proxima_ocorrencia.strftime('%d/%m/%Y')}\n" if proxima_ocorrencia.date() != agora.date() else ""
         
         texto_campo = (
@@ -147,7 +160,7 @@ def criar_embed_agenda_detalhada(agora):
         encontrou_algum = True
 
     if not encontrou_algum:
-        embed.description = "Nenhum boss programado."
+        embed.description = "Nenhum boss programado para hoje."
     embed.add_field(name="\u200b", value="━━━━━━━━━━━━━━━━━━━━\n*Fique atento aos horários e prepare-se para disputar os bosses!*", inline=False)
     return embed
 
@@ -428,35 +441,42 @@ async def apagar_mensagem_depois(mensagem, segundos):
         ultima_mensagem_lista = None
 
 # =========================================================
-# LOOP PRINCIPAL
+# LOOP PRINCIPAL UNIFICADO
 # =========================================================
 
 @tasks.loop(seconds=5)
 async def verificar_boss():
     async with lock:
         agora = datetime.now(TIMEZONE)
+        weekday_atual = agora.weekday()
 
-        # 1. Atualizar Painel no canal `horários-boss`
+        # 1. Atualizar ou Editar o Painel no canal `horários-boss` (Sem duplicar)
         canal_painel = bot.get_channel(CANAL_PAINEL_ID)
         if canal_painel:
             embed_painel = criar_embed_agenda_detalhada(agora)
             msg_id = estado.get("id_mensagem_painel")
             msg_painel = None
+            
             if msg_id:
                 try:
                     msg_painel = await canal_painel.fetch_message(msg_id)
                 except Exception:
                     msg_painel = None
+
             try:
                 if msg_painel:
                     await msg_painel.edit(embed=embed_painel)
                 else:
-                    async for m in canal_painel.history(limit=10):
+                    # Tenta encontrar a mensagem anterior do bot se houver
+                    async for m in canal_painel.history(limit=15):
                         if m.author == bot.user and m.embeds and "HORÁRIOS DE BOSSES" in (m.embeds[0].title or ""):
                             msg_painel = m
                             break
+                    
                     if msg_painel:
                         await msg_painel.edit(embed=embed_painel)
+                        estado["id_mensagem_painel"] = msg_painel.id
+                        salvar_estado()
                     else:
                         nova_msg = await canal_painel.send(embed=embed_painel)
                         estado["id_mensagem_painel"] = nova_msg.id
@@ -470,11 +490,14 @@ async def verificar_boss():
         # 3. Garantir Painel de Consulta no canal `consultar-pontos`
         await garantir_painel_consulta()
 
-        # 4. Alerta de 10 min no canal `-alerta-dos-boss` e Abertura Automática da Lista aos 5 min no canal `presença-boss`
+        # 4. Alertas de 10 min e Abertura Automática de Listas aos 5 min
         canal_alertas = bot.get_channel(CANAL_ALERTAS_ID)
         
         for chave, dados_boss in BOSSES.items():
             nome, horario, dias, mapa, coords, emoji, pontos = dados_boss
+            if dias is not None and weekday_atual not in dias:
+                continue
+
             proxima_ocorrencia = proxima_data_boss(dados_boss, agora)
             if proxima_ocorrencia is None:
                 continue
@@ -485,21 +508,21 @@ async def verificar_boss():
             chave_alerta_10m = f"{nome}_{horario}_{data_hoje}_10min"
             chave_lista_5m = f"{nome}_{horario}_{data_hoje}_5min_lista"
 
-            # Alerta de 10 minutos exatos no canal de alertas (`-alerta-dos-boss`)
+            # Alerta de 10 minutos exatos no canal de alertas (`⚠️-alerta-dos-boss`)
             if 590 <= diferenca <= 600:
                 if chave_alerta_10m not in alertas_10min_memoria:
                     alertas_10min_memoria.add(chave_alerta_10m)
                     if canal_alertas:
                         embed_alerta = discord.Embed(
-                            title=f"🚨 BOSS EM 10 MINUTOS: {emoji} {nome} 🚨",
+                            title=f"🔥 BOSS {emoji} {nome} NASCENDO EM BREVE! 🔥",
                             description=(
                                 f"⏰ **Horário:** {horario}\n"
                                 f"📍 **Mapa:** {mapa}\n"
                                 f"📌 **Coordenadas:** `{coords}`\n"
                                 f"🏆 **Pontuação:** `{pontos} pontos`\n\n"
-                                "**Preparem-se! O boss está prestes a nascer.**"
+                                "*Corram para o local!*"
                             ),
-                            color=0xE74C3C,
+                            color=0xFFA500,
                         )
                         try:
                             await canal_alertas.send(
@@ -519,7 +542,7 @@ async def verificar_boss():
 @bot.event
 async def on_ready():
     print(f"---------------------------------------")
-    print(f"✅ Bot conectado com sucesso como: {bot.user}")
+    print(f"✅ Bot unificado conectado como: {bot.user}")
     print(f"🕒 Fuso horário: {TIMEZONE}")
     print(f"---------------------------------------")
     
