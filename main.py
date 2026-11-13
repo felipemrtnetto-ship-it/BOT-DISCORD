@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import json
 import os
 
-print("🔄 A iniciar o script unificado do bot com volume em /data...")
+print("🔄 A iniciar o script unificado do bot corrigido...")
 
 # =========================================================
 # CONFIGURAÇÕES DE CANAIS EXATOS
@@ -66,7 +66,6 @@ def estado_padrao():
     }
 
 def carregar_estado():
-    # Cria a pasta /data caso não exista
     os.makedirs(os.path.dirname(ARQUIVO_ESTADO), exist_ok=True)
     if not os.path.exists(ARQUIVO_ESTADO):
         return estado_padrao()
@@ -229,4 +228,157 @@ class ViewConsultaPontos(discord.ui.View):
                 break
 
         if posicao_usuario:
-            resposta = f"📊 **Consulta de Pontuação**\n\n👤 **Membro:** {usuario}\
+            resposta = f"📊 **Consulta de Pontuação**\n\n👤 **Membro:** {usuario}\n🏆 **Pontos Atuais:** `{pontos_usuario} pts`\n🏅 **Posição no Ranking:** `#{posicao_usuario}`"
+        else:
+            resposta = f"📊 **Consulta de Pontuação**\n\n👤 **Membro:** {usuario}\n🏆 **Pontos Atuais:** `0 pts`\n🏅 **Posição no Ranking:** `Não ranqueado`"
+
+        await interaction.followup.send(resposta, ephemeral=True)
+
+
+class ViewPresenca(discord.ui.View):
+    def __init__(self, nome_boss, pontos):
+        super().__init__(timeout=900)
+        self.nome_boss = nome_boss
+        self.pontos = pontos
+        self.participantes = set()
+
+    @discord.ui.button(label="✅ Registrar Presença", style=discord.ButtonStyle.green, custom_id="registrar_presenca")
+    async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        usuario = interaction.user.display_name
+        if usuario in self.participantes:
+            await interaction.followup.send("⚠️ Você já registou presença neste boss!", ephemeral=True)
+            return
+
+        self.participantes.add(usuario)
+
+        async with lock:
+            ranking = estado.get("ranking", {})
+            ranking[usuario] = int(ranking.get(usuario, 0)) + self.pontos
+            estado["ranking"] = ranking
+            salvar_estado()
+
+        nomes = "\n".join(f"• {p}" for p in sorted(self.participantes)) or "Nenhum participante ainda."
+        if len(nomes) > 1024:
+            nomes = nomes[:1021] + "..."
+
+        try:
+            embed = interaction.message.embeds[0]
+            embed.clear_fields()
+            embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
+            embed.add_field(name=f"👥 Participantes ({len(self.participantes)})", value=nomes, inline=False)
+
+            await interaction.message.edit(embed=embed, view=self)
+            await atualizar_ranking()
+
+            await interaction.followup.send(f"🎉 Presença registada com sucesso! +{self.pontos} pontos.", ephemeral=True)
+        except Exception as erro:
+            print(f"⚠️ Erro ao atualizar presença: {erro}")
+            await interaction.followup.send("Pontuação registada, mas houve uma falha ao atualizar o painel visual.", ephemeral=True)
+
+# =========================================================
+# ATUALIZAÇÃO DE CANAIS
+# =========================================================
+
+async def atualizar_ranking():
+    canal = bot.get_channel(CANAL_RANKING_ID)
+    if not canal:
+        try:
+            canal = await bot.fetch_channel(CANAL_RANKING_ID)
+        except Exception:
+            return
+
+    embed = criar_embed_ranking()
+    mensagem_id = estado.get("id_mensagem_ranking")
+    mensagem = None
+
+    if mensagem_id:
+        try:
+            mensagem = await canal.fetch_message(mensagem_id)
+        except Exception:
+            mensagem = None
+
+    try:
+        if mensagem:
+            await mensagem.edit(embed=embed)
+        else:
+            async for msg in canal.history(limit=15):
+                if msg.author == bot.user and msg.embeds and "RANKING GERAL" in (msg.embeds[0].title or ""):
+                    mensagem = msg
+                    break
+            if mensagem:
+                await mensagem.edit(embed=embed)
+            else:
+                mensagem = await canal.send(embed=embed)
+            estado["id_mensagem_ranking"] = mensagem.id
+            salvar_estado()
+    except Exception as erro:
+        print(f"⚠️ Erro no ranking: {erro}")
+
+async def garantir_painel_consulta():
+    canal = bot.get_channel(CANAL_CONSULTA_ID)
+    if not canal:
+        try:
+            canal = await bot.fetch_channel(CANAL_CONSULTA_ID)
+        except Exception:
+            return
+
+    embed = criar_embed_consulta()
+    view = ViewConsultaPontos()
+    mensagem_id = estado.get("id_mensagem_consulta")
+    mensagem = None
+
+    if mensagem_id:
+        try:
+            mensagem = await canal.fetch_message(mensagem_id)
+        except Exception:
+            mensagem = None
+
+    try:
+        if mensagem:
+            await mensagem.edit(embed=embed, view=view)
+        else:
+            async for msg in canal.history(limit=15):
+                if msg.author == bot.user and msg.embeds and "CENTRAL DE CONSULTA" in (msg.embeds[0].title or ""):
+                    mensagem = msg
+                    break
+            if mensagem:
+                await mensagem.edit(embed=embed, view=view)
+            else:
+                mensagem = await canal.send(embed=embed, view=view)
+            estado["id_mensagem_consulta"] = mensagem.id
+            salvar_estado()
+    except Exception as erro:
+        print(f"⚠️ Erro no painel de consulta: {erro}")
+
+# =========================================================
+# ABERTURA AUTOMÁTICA DA LISTA DE PRESENÇA (5 MIN)
+# =========================================================
+
+async def abrir_lista_automatica(dados_boss):
+    global ultima_mensagem_lista
+    canal = bot.get_channel(CANAL_PRESENCA_ID)
+    if not canal:
+        return
+
+    nome, horario, dias, mapa, coords, emoji, pontos = dados_boss
+    embed = discord.Embed(
+        title=f"🔥 LISTA ABERTA: {emoji} {nome} 🔥",
+        description=f"⏰ **Horário:** {horario}\n📍 **Mapa:** {mapa} (`{coords}`)\n🏆 **Vale:** {pontos} pontos\n\n*Clique no botão abaixo para registrar a sua presença!*",
+        color=0x2ECC71,
+    )
+    embed.add_field(name="⏱️ Status", value="Lista aberta! Fecha em 15 minutos.", inline=False)
+    embed.add_field(name="👥 Participantes (0)", value="Nenhum participante ainda.", inline=False)
+
+    view = ViewPresenca(nome, pontos)
+    try:
+        mensagem = await canal.send(
+            content="@everyone",
+            embed=embed,
+            view=view,
+            allowed_mentions=discord.AllowedMentions(everyone=True),
+        )
+        ultima_mensagem_lista = mensagem
+        asyncio.create_task(apagar_mensagem_depois(mensagem, 900))
+    except Exception
